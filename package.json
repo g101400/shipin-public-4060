@@ -1,0 +1,10 @@
+{
+  "name": "shipin-yunwei",
+  "version": "2.3.0",
+  "productName": "视频设备运维一张图",
+  "description": "视频设备运维一张图（龙芯版·浏览器壳：设备地图/多照片/导入导出，支持离线）",
+  "homepage": "https://techpromo.cn/shipin-yunwei",
+  "build": {
+    "productName": "视频设备运维一张图"
+  }
+}
