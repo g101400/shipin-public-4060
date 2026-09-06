@@ -1,0 +1,48 @@
+# ===== 密钥（本地真实值，绝不入库）=====
+secrets/config.local.js
+# 安卓签名 keystore（发布签名凭据，本地持有；公开库仅放路径引用）
+build/targets/keystore/
+build/targets/android/local.properties
+build/targets/*/.gradle/
+
+# ===== 构建产物 / 安装包 =====
+*.apk
+*.aab
+*.ipa
+*.deb
+*.exe
+*.msi
+*.zip
+releases/
+build_v24*.log
+.build_v24_ts
+.upload_tmp
+.upload_tmp.done
+dist/
+out/
+build/targets/*/node_modules/
+build/targets/*/release*/
+build/targets/*/.ecache/
+build/targets/*/.npmcache/
+build/targets/win11/jingmi_app/*
+build/targets/uos/jingmi_app/*
+build/targets/android/app/src/main/assets/www/*
+build/targets/android/app/build/
+build/targets/android/.gradle/
+build/targets/ios/*/pwa/*
+
+# ===== 备份 / 日志 / 临时 =====
+*.bak
+*.bak*
+*.log
+.data.real.*
+*.apk_hold
+rel_extract*/
+
+# ===== 依赖 / 工具 =====
+node_modules/
+.thumbs/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
