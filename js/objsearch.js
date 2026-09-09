@@ -559,6 +559,21 @@
     }
   } catch (e) {}
 
+  // 导入外部文档后自动与对象关联（预案/规范 → 建筑物 / 设备 / 古建）
+  try {
+    if (global.KB && typeof KB.importDocuments === "function" && !KB.__objLinkedHook) {
+      var _imp = KB.importDocuments;
+      KB.importDocuments = function (files, onProg) {
+        var pr = _imp.call(KB, files, onProg);
+        return Promise.resolve(pr).then(function (r) {
+          try { linkDocs(); if (KB.buildIndex) KB.buildIndex(); } catch (e) {}
+          return r;
+        });
+      };
+      KB.__objLinkedHook = 1;
+    }
+  } catch (e) {}
+
   try {
     if (!global.__EXT_ACTS__) global.__EXT_ACTS__ = {};
     global.__EXT_ACTS__.objParamSearch = openObjParamSearch;
