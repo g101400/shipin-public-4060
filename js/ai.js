@@ -692,7 +692,7 @@
     update(rec) { if (!AI.domain) return toast("AI 未初始化"); rec ? runUpdate(AI.domain, rec) : AI.openUpdate(); },
     correct(rec) { if (!AI.domain) return toast("AI 未初始化"); rec ? showCorrectForm(AI.domain, rec) : AI.openCorrect(); },
     openHistory() { if (!AI.domain) return toast("AI 未初始化"); openHistory(AI.domain); },
-    strategyCall
+    strategyCall, mdLite
   };
   global.AI = AI;
 })(window);
