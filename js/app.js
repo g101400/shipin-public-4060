@@ -357,13 +357,38 @@
   function orgDefault(key) { return (ORGCFG.defaults && ORGCFG.defaults[key]) || DEFAULT_ORG[key] || ""; }
   function stationOffice(name) { const m = (ORGCFG.stations || []).find((s) => s.name === name); return m ? m.office : ""; }
   // 管理所名称统一（与水利端一致）：去「管理」两字 + 潮河/水库特例
-  function normOffice(name) {
-    if (!name) return "";
-    const s = String(name).trim();
-    if (/潮河/.test(s)) return "潮河所";
-    if (/水库/.test(s)) return "水库所";
-    return s.replace(/管理所/g, "所");
+    // ---------- v2.4.9 管理所智能识别：9 所标准名单模糊匹配 + 潮河/水库特例 + 「站」归为所的下一级 ----------
+  function smartOffice(name) {
+    const raw = String(name == null ? "" : name).trim();
+    if (!raw) return { office: "", station: "", changed: false };
+    const list = (typeof BASE_OFFICES !== "undefined" && BASE_OFFICES.length) ? BASE_OFFICES : [];
+    const SET = (typeof BASE_OFFICES_SET !== "undefined" && BASE_OFFICES_SET.has) ? BASE_OFFICES_SET : new Set(list);
+    if (SET.has(raw)) return { office: raw, station: "", changed: false };
+    // ② 含标准所名（如「潮河所一号站」「怀柔水库所」）→ 所 + 剩余部分若为站则下沉
+    for (let i = 0; i < list.length; i++) {
+      if (raw.indexOf(list[i]) >= 0) {
+        const st = raw.replace(list[i], "").trim();
+        return { office: list[i], station: /站$/.test(st) ? st : "", changed: list[i] !== raw };
+      }
+    }
+    // ③ 站不是所：以「站」结尾且不含标准所名 → 归为站（所留空），不进所名单
+    if (/站$/.test(raw) || /管理站$/.test(raw)) return { office: "", station: raw, changed: true };
+    // ④ 去噪声后模糊匹配：温泉管理所→温泉、潮河总干渠管理所→潮河
+    const core = raw.replace(/管理所|管理处|管理|总干渠|所|站/g, "");
+    for (let i = 0; i < list.length; i++) {
+      const oc = list[i].replace(/所$/, "");
+      if (core && (core === oc || core.indexOf(oc) >= 0 || oc.indexOf(core) >= 0)) {
+        return { office: list[i], station: "", changed: list[i] !== raw };
+      }
+    }
+    const out = raw.replace(/管理所/g, "所").replace(/管理处/g, "处");
+    return { office: out, station: "", changed: out !== raw };
   }
+  function normOffice(name) { return smartOffice(name).office; }
+  // ---------- /v2.4.9 管理所智能识别 ----------
+
+// ---------- /v2.4.9 管理所智能识别 ----------
+
   // 记录取某层级值：无值时回填默认（局/管理处/所），站/段无默认返回原值
   function orgVal(r, key) {
     if (!r) return orgDefault(key);
@@ -1794,7 +1819,7 @@ function popupHtml(r) {
   function exportPhotosMenu() {
     const hasFilter = filter.office.length || filter.btype.length || filter.q;
     const recsAll = records, recsFiltered = records.filter(passFilter);
-    const html = `<div class="field"><label>导出范围</label>
+    const html = `<div class="hint" id="phStat" style="background:#eef4ff;color:#1e40af;border-radius:8px;padding:8px 10px;margin-bottom:10px">正在统计…</div>\n<div class="field"><label>导出范围</label>
         <select id="phScope"><option value="all">全部监控点（${recsAll.length}）</option>${hasFilter ? `<option value="filtered" selected>当前筛选（${recsFiltered.length}）</option>` : ""}</select></div>
       <div class="field"><label>压缩格式</label>
         <select id="phFmt"><option value="zip">zip（推荐，通用）</option><option value="7z">7z（当前环境降级为 zip）</option></select></div>
@@ -1823,6 +1848,33 @@ function popupHtml(r) {
       <div class="hint">照片按所选层次分文件夹（默认「管理所 / 监控点_序号.扩展名」）；压缩包内含 manifest.json，可<b>确定性重新导入</b>（自动绑定到原监控点，无需逐张人工选择）。</div>`;
     openModal("导出照片", html, `<button class="btn ghost" id="phCancel">取消</button><button class="btn primary" id="phGo">导出</button>`);
     el("phCancel").onclick = closeModal;
+    // ---------- v2.4.9-A 实时统计：将导出 N 个建筑物 / M 张照片（随范围与管理所勾选联动）----------
+    const phHasSrc = (p) => !!(p && (p.full || p.dataUrl || p.thumb || p.b64));
+    const phCount = (rs) => rs.reduce((n, r) => n + ((r.photos || []).filter(phHasSrc).length), 0);
+    const phStatUpdate = () => {
+      const box = document.getElementById("phStat"); if (!box) return;
+      const scopeEl = document.getElementById("phScope");
+      let rs = (scopeEl && scopeEl.value === "filtered") ? recsFiltered : recsAll;
+      const cbs = document.querySelectorAll("#phOffices .ofc-cb");
+      if (cbs && cbs.length) {
+        const checked = []; for (let i = 0; i < cbs.length; i++) if (cbs[i].checked) checked.push(cbs[i].value);
+        if (checked.length && checked.length < cbs.length) {
+          const want = checked.map((o) => (typeof normOffice === "function" ? normOffice(o) : o));
+          rs = rs.filter((r) => {
+            const v = typeof normOffice === "function" ? normOffice((typeof orgVal === "function" ? orgVal(r, "office") : r.office)) : r.office;
+            return want.indexOf(v) >= 0;
+          });
+        }
+      }
+      box.innerHTML = "将导出：<b>" + rs.length + "</b> 个对象 / <b>" + phCount(rs) + "</b> 张照片" +
+        (rs.length ? "" : "（可切换导出范围或勾选更多管理所）");
+    };
+    const phScopeEl = document.getElementById("phScope"); if (phScopeEl) phScopeEl.onchange = phStatUpdate;
+    const phCbs = document.querySelectorAll("#phOffices .ofc-cb");
+    for (let i = 0; i < phCbs.length; i++) phCbs[i].onchange = phStatUpdate;
+    phStatUpdate();
+    // ---------- /v2.4.9-A ----------
+
     // 组合段（v2.4）：文件名 + 文件夹层次
     const segValOf = (r, seg) => seg === "bureau" ? orgVal(r, "bureau") : seg === "mgmt" ? orgVal(r, "mgmt")
       : seg === "office" ? (normOffice(orgVal(r, "office")) || "未分类所") : seg === "station" ? (r.station || "")
@@ -1861,6 +1913,15 @@ function popupHtml(r) {
   }
   async function doExportPhotos(recs, opts) {
     opts = opts || {};
+    // ---------- v2.4.9-B 管理所过滤双向归一化 ----------
+    if (opts.offices && opts.offices.length) {
+      const want = opts.offices.map((o) => normOffice(o));
+      recs = recs.filter((r) => {
+        const v = normOffice(typeof orgVal === "function" ? orgVal(r, "office") : r.office);
+        return want.indexOf(v) >= 0 || (Array.isArray(r.office) && r.office.some((x) => want.indexOf(normOffice(x)) >= 0));
+      });
+    }
+    // ---------- /v2.4.9-B ----------
     const files = [];
     const manifestItems = []; // bug②修复：记录 filename -> 监控点 id 映射，供确定性重新导入
     const safe = (s) => (s || "监控点").replace(/[\\/:*?"<>|\n\r]+/g, "_").slice(0, 40);
@@ -1892,11 +1953,16 @@ function popupHtml(r) {
           }
         }
         if (!b64) {
-          if (!ph.dataUrl || !ph.dataUrl.startsWith("data:")) continue;
-          const comma = ph.dataUrl.indexOf(",");
-          b64 = ph.dataUrl.substring(comma + 1);
-          const mime = ph.dataUrl.substring(5, ph.dataUrl.indexOf(";")).replace("/", ".");
-          ext = mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("webp") ? "webp" : "jpg";
+          // ---------- v2.4.9-C 多字段兜底：full / dataUrl / thumb / b64 任一可用即导出 ----------
+          const src = [ph.dataUrl, ph.full, ph.thumb].filter((s) => s && String(s).startsWith("data:"))[0] || "";
+          if (src) {
+            const comma = src.indexOf(",");
+            b64 = src.substring(comma + 1);
+            const mime = src.substring(5, src.indexOf(";")).replace("/", ".");
+            ext = mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("webp") ? "webp" : "jpg";
+          } else if (ph.b64) { b64 = ph.b64; ext = "jpg"; }
+          else continue;
+          // ---------- /v2.4.9-C ----------
         }
         // 按所选文件夹层次分目录（v2.4：默认 管理所/，可选 局/管理处/所/站/段 组合）：层次/监控点_序号.ext
         const phName = folderPrefix(r) + `${safe(r.name)}_${i + 1}.${ext}`;
@@ -1909,7 +1975,7 @@ function popupHtml(r) {
       // v2.2 问题①根因防护：Web/PWA/Win/UOS 上"没有可导出照片"通常是导入未成功（照片数据从未落库），而非导出代码缺路径——给可操作指引而非只报一句。
       const plat = (window.AndroidBridge && window.AndroidBridge.exportFilesToTree) ? "安卓" : "当前平台（统信 UOS / Web / PWA / Win11）";
       return openModal("没有可导出照片",
-        `<div class="hint">所选范围内没有照片数据。</div>
+        `<div class="hint">所选范围内没有照片数据（范围内 <b>${recs.length}</b> 个对象，其中 <b>${recs.filter((r) => (r.photos || []).length).length}</b> 个带照片记录）。</div>
          <div class="hint">常见原因：在本平台<b>尚未成功导入照片</b>（照片数据未落库）。</div>
          <div class="hint">🟢 解决路径：<br>
          · 统信 UOS（内存仅 8G）：请用菜单「传输与共享 → 从安卓复制照片」做<b>目录流式导入</b>（免整包入内存，避免崩溃）；<br>
@@ -2111,6 +2177,43 @@ function popupHtml(r) {
   }
 
   // ---------- 导入 / 导出 ----------
+    // ---------- v2.4.9 导入时管理所智能识别 + 统一确认 ----------
+  async function unifyOfficesOnImport(recs) {
+    try {
+      const map = new Map();
+      for (const r of recs) {
+        const raw = String(r.office == null ? "" : r.office).trim();
+        if (!raw) continue;
+        const sm = smartOffice(raw);
+        if (sm.changed) map.set(raw, sm);
+      }
+      if (!map.size) return recs;
+      const rows = Array.from(map.entries()).map(function (kv) {
+        const to = kv[1].office || ("归入站：" + kv[1].station);
+        return '<div class="fi">' + esc(kv[0]) + ' → <b>' + esc(to) + '</b></div>';
+      }).join("");
+      const ok = await new Promise((resolve) => {
+        openModal("管理所名称统一确认",
+          '<div class="hint">导入数据中的管理所名称与标准名单不一致，是否按建议统一？</div>' +
+          '<div class="hint">标准名单：地下水源所、温泉所、龙山所、史山所、埝头所、水库所、北台上所、西田各庄所、潮河所（站为所的下一级，不参与所名单）。</div>' +
+          '<div class="filelist">' + rows + '</div>',
+          '<button class="btn ghost" id="uoKeep">保持原样</button><button class="btn primary" id="uoGo">按建议统一</button>');
+        el("uoKeep").onclick = () => { closeModal(); resolve(false); };
+        el("uoGo").onclick = () => { closeModal(); resolve(true); };
+      });
+      if (!ok) return recs;
+      return recs.map(function (r) {
+        const raw = String(r.office == null ? "" : r.office).trim();
+        if (!raw || !map.has(raw)) return r;
+        const sm = map.get(raw);
+        const nr = Object.assign({}, r, { office: sm.office || raw });
+        if (sm.station && !nr.station) nr.station = sm.station;   // 站下沉为所的下一级
+        return nr;
+      });
+    } catch (e) { return recs; }
+  }
+  // ---------- /v2.4.9 导入统一确认 ----------
+
   async function doImport(file) {
     const ext = file.name.toLowerCase().split(".").pop();
     if (!["kml", "csv", "kmz", "ovkmz", "xls", "xlsx", "ovobj", "obj"].includes(ext)) return toast("不支持的格式：" + ext);
@@ -2150,6 +2253,8 @@ function popupHtml(r) {
         recs = await IO.importKmzBuffer(bufBytes.buffer);
       }
       if (!recs.length) { hideBusy(); throw new Error("未解析到任何监控点"); }
+
+      recs = await unifyOfficesOnImport(recs);
       // 内容去重（item 6）：整文件哈希，若与此前导入的相同则提示覆盖/跳过
       if (bufBytes) {
         const h = await IO.sha256Hex(bufBytes);
@@ -2285,6 +2390,8 @@ function popupHtml(r) {
         const go = await confirmLargeTransfer("导出 " + fmt.toUpperCase() + "（含照片，可能很大）");
         if (!go) return;
       }
+      // v2.4.9 导出统一：管理所一律写标准名（去「管理」、潮河/水库归位），与导入/筛选口径一致
+      (typeof sel !== "undefined" && sel ? sel : []).forEach(function (r) { if (r && r.office != null) { const nv = normOffice(r.office); if (nv) r.office = nv; } });
       busy("正在生成导出文件，请稍后…");
       await new Promise((r) => setTimeout(r, 30));
       try {
@@ -2842,7 +2949,13 @@ function popupHtml(r) {
       if (ph && ph.fullPath && window.AndroidBridge && window.AndroidBridge.loadFullImage) {
         try { const full = window.AndroidBridge.loadFullImage(ph.fullPath); if (full && full.startsWith("data:")) return resolve(full); } catch (e) {}
       }
-      resolve(ph ? (ph.dataUrl || "") : "");
+      // v2.4.9：兜底链 full → dataUrl → thumb；三者皆空时明确提示 + 入错误日志，不再白屏
+      const src = (ph && (ph.full || ph.dataUrl || ph.thumb)) || "";
+      if (!src) {
+        try { if (window.__ERR_LOG_PUSH__) window.__ERR_LOG_PUSH__("照片数据缺失（无可用图像源）：" + JSON.stringify({ cap: ph && ph.caption, keys: ph ? Object.keys(ph) : [] })); } catch (e) {}
+        try { if (typeof toast === "function") toast("该照片数据缺失（原始图像未随文件导入）"); } catch (e) {}
+      }
+      resolve(src);
     });
   }
   async function openPhoto(rid, pi) {
@@ -3125,6 +3238,119 @@ function popupHtml(r) {
     } catch (e) { return []; }
   }
   function saveHiddenMenus(a) { try { localStorage.setItem(HM_KEY, JSON.stringify(a)); } catch (e) {} }
+
+  // ---------- v2.4.9：子菜单「隐藏 / 收藏」按钮（带二次确认，防误点）----------
+  var MACT_PREF = HM_KEY + "_macts";
+  function mactsEnabled() { try { return localStorage.getItem(MACT_PREF) !== "0"; } catch (e) { return true; } }
+  function setMactsEnabled(on) { try { localStorage.setItem(MACT_PREF, on ? "1" : "0"); } catch (e) {} }
+  function isFavAct(a) { try { return loadQuickFavs().indexOf(a) >= 0; } catch (e) { return false; } }
+  function clearMenuActs(root) {
+    var as = (root || document).querySelectorAll(".macts");
+    for (var i = 0; i < as.length; i++) { if (as[i].parentNode) as[i].parentNode.removeChild(as[i]); }
+  }
+  // 同步已注入按钮的显示状态（收藏星标 / 保护项置灰）
+  function syncMacts(wrap, act) {
+    if (!wrap) return;
+    var cs = wrap.children || [];
+    for (var i = 0; i < cs.length; i++) {
+      var c = cs[i];
+      if (!c.classList) continue;
+      if (c.classList.contains("hide")) {
+        var prot = HM_PROTECT.indexOf(act) >= 0;
+        if (prot) { c.classList.add("disabled"); c.setAttribute("title", "该菜单是恢复入口，不允许隐藏"); }
+      } else {
+        var on = isFavAct(act);
+        if (on) c.classList.add("on"); else c.classList.remove("on");
+        c.setAttribute("title", on ? "移出快捷常用" : "加入快捷常用");
+        c.textContent = on ? "\u2605" : "\u2606";
+      }
+    }
+  }
+  // 给抽屉内每个子菜单注入「收藏 / 隐藏」按钮
+  function decorateMenuButtons() {
+    var root = (document.getElementById && document.getElementById("drawer")) || document;
+    if (!root || !root.querySelectorAll) return;
+    if (!mactsEnabled()) { clearMenuActs(root); return; }
+    var btns = root.querySelectorAll(".menu-btn");
+    for (var i = 0; i < btns.length; i++) (function (b) {
+      var act = b.dataset ? (b.dataset.act || "") : "";
+      if (!act) return;
+      if (b.classList && (b.classList.contains("pin") || b.classList.contains("qf-btn"))) return;
+      if (loadHiddenMenus().indexOf(act) >= 0) return;
+      var ex = b.querySelector ? b.querySelector(".macts") : null;
+      if (ex) { syncMacts(ex, act); return; }   // 已装饰过：只同步状态（收藏星标实时反映）
+      var prot = HM_PROTECT.indexOf(act) >= 0;
+      var wrap = document.createElement("span");
+      wrap.className = "macts";
+      var fav = document.createElement("span");
+      var on = isFavAct(act);
+      fav.className = "mact" + (on ? " on" : "");
+      fav.setAttribute("role", "button");
+      fav.setAttribute("title", on ? "移出快捷常用" : "加入快捷常用");
+      fav.textContent = on ? "\u2605" : "\u2606";
+      var hid = document.createElement("span");
+      hid.className = "mact hide" + (prot ? " disabled" : "");
+      hid.setAttribute("role", "button");
+      hid.setAttribute("title", prot ? "该菜单是恢复入口，不允许隐藏" : "隐藏此菜单");
+      hid.textContent = "\uD83D\uDEAB";
+      function stopProp(e) { if (e && e.stopPropagation) e.stopPropagation(); }
+      function onClick(e) { if (e && e.stopPropagation) e.stopPropagation(); if (e && e.preventDefault) e.preventDefault(); }
+      fav.addEventListener("click", function (e) { onClick(e); confirmFavMenu(act, b); });
+      fav.addEventListener("touchend", stopProp);
+      hid.addEventListener("click", function (e) { onClick(e); confirmHideMenu(act, b); });
+      hid.addEventListener("touchend", stopProp);
+      wrap.appendChild(fav); wrap.appendChild(hid);
+      b.appendChild(wrap);
+    })(btns[i]);
+    ensureMenuActToggle(root);
+  }
+  // 抽屉头部 ⚙ 开关：一键收起/显示这些按钮
+  function ensureMenuActToggle(root) {
+    try {
+      var head = root.querySelector ? root.querySelector(".head") : null;
+      if (!head) return;
+      var t = document.getElementById("mactToggle");
+      if (!t) {
+        t = document.createElement("span");
+        t.id = "mactToggle";
+        t.className = "macttg";
+        t.setAttribute("title", "显示/隐藏 菜单上的收藏与隐藏按钮");
+        t.addEventListener("click", function (e) {
+          if (e && e.stopPropagation) e.stopPropagation();
+          var on = !mactsEnabled();
+          setMactsEnabled(on);
+          clearMenuActs(root);
+          if (on) decorateMenuButtons();
+          else if (typeof toast === "function") toast("已收起菜单上的收藏/隐藏按钮（长按菜单项仍可操作）");
+        });
+        if (head.firstChild) head.insertBefore(t, head.firstChild); else head.appendChild(t);
+      }
+      t.textContent = mactsEnabled() ? "\u2699\uFE0F" : "\u2699";
+    } catch (e) {}
+  }
+  // 二次确认：收藏 / 移出快捷常用
+  function confirmFavMenu(act, b) {
+    var title = (typeof btnMenuTitle === "function" ? btnMenuTitle(b) : "") || act;
+    var on = isFavAct(act);
+    openModal(on ? "确认移出快捷常用？" : "确认加入快捷常用？",
+      '<div class="hint">' + (on ? '将把「<b>' + esc(title) + '</b>」从「快捷常用」中移出。' : '将把「<b>' + esc(title) + '</b>」加入「快捷常用」，显示在查询 / 筛选下方。') + '原菜单位置的功能<b>仍然保留</b>。</div>',
+      '<button class="btn ghost" id="cfCancel">取消</button><button class="btn primary" id="cfOk">' + (on ? "确认移出" : "确认收藏") + '</button>');
+    var c = el("cfCancel"); if (c) c.onclick = closeModal;
+    var o = el("cfOk");
+    if (o) o.onclick = function () { closeModal(); try { toggleQuickFav(act); } catch (e) { toast("操作失败：" + (e && e.message ? e.message : e)); } };
+  }
+  // 二次确认：隐藏菜单
+  function confirmHideMenu(act, b) {
+    var title = (typeof btnMenuTitle === "function" ? btnMenuTitle(b) : "") || act;
+    if (HM_PROTECT.indexOf(act) >= 0) { toast("该菜单是恢复入口，不允许隐藏"); return; }
+    openModal("确认隐藏此菜单？",
+      '<div class="hint">即将隐藏「<b>' + esc(title) + '</b>」。<br/>隐藏<b>不会删除</b>任何功能，可随时在「设置 → 恢复隐藏子菜单 / 隐藏子菜单列表」中恢复显示。</div>',
+      '<button class="btn ghost" id="cfCancel">取消</button><button class="btn primary" id="cfOk">确认隐藏</button>');
+    var c = el("cfCancel"); if (c) c.onclick = closeModal;
+    var o = el("cfOk");
+    if (o) o.onclick = function () { closeModal(); try { hideMenuAct(act); } catch (e) { toast("操作失败：" + (e && e.message ? e.message : e)); } };
+  }
+  // ---------- /v2.4.9 子菜单「隐藏 / 收藏」按钮 ----------
   function applyHiddenMenus() {
     const hm = loadHiddenMenus();
     const root = (document.getElementById && document.getElementById("drawer")) || document;
@@ -3140,6 +3366,7 @@ function popupHtml(r) {
       const grp = subs[i].previousElementSibling;
       if (grp && grp.classList && grp.classList.contains("mgroup")) grp.style.display = vis.length ? "" : "none";
     }
+    try { decorateMenuButtons(); } catch (e) {}
   }
   function hideMenuAct(act) {
     if (!act) return;
@@ -3260,6 +3487,7 @@ function popupHtml(r) {
       return `<button class="menu-btn qf-btn" data-act="${act}"><span class="ico">${ico}</span><span>${esc(title)}<span class="sub">快捷常用 · 长按移出</span></span></button>`;
     }).join("");
     box.querySelectorAll(".menu-btn").forEach(bindMenuBtn);
+    try { decorateMenuButtons(); } catch (e) {}
   }
   function openQuickFavSettings() {
     const all = [...document.querySelectorAll(".drawer .menu-btn:not(.qf-btn)")].filter((b) => !QF_EXCLUDE.includes(b.dataset.act));
@@ -3943,7 +4171,7 @@ function popupHtml(r) {
   })();
 
   // ---------- 启动 ----------
-  window.APP = { edit: openEdit, shareBuilding,   /* v2.4.3 修复：气泡「分享」按钮 onclick=\"APP.shareBuilding()\" 长期未导出 → 点击即 script error */ del, openPhoto, viewPhotos: openPhotoCycle, navigate, nearCenter, close: closeModal, back,
+  window.APP = { showAllParams, edit: openEdit, shareBuilding,   /* v2.4.3 修复：气泡「分享」按钮 onclick=\"APP.shareBuilding()\" 长期未导出 → 点击即 script error */ del, openPhoto, viewPhotos: openPhotoCycle, navigate, nearCenter, close: closeModal, back,
     receivePhoto, receiveSheet, receiveDone, receiveError, receiveCancel, onExportResult };
   // v2.4.3：暴露 ai.js 依赖的全局 helper（三端一致），否则 AI 菜单 openModal is not defined → script error
   window.el = el;
@@ -4027,4 +4255,134 @@ function popupHtml(r) {
       toast("已复制当前密钥到剪贴板");
     };
   }
+  // ---------- v2.4.9：启动口令保护（默认 3305，可修改 / 可保存）----------
+  var PWD_DEFAULT = "3305";
+  var DEV_EXT_NO = "3305";
+  var PWD_KEY = (window.__APP_ID__ || "app") + "_pwd_v1";
+  var PWD_SAVE_KEY = (window.__APP_ID__ || "app") + "_pwdsave_v1";
+  function pwdHash(s) {
+    var str = "yzt#" + String(s == null ? "" : s);
+    var h = 5381, h2 = 52711, i;
+    for (i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) & 0x7fffffff;
+    for (i = str.length - 1; i >= 0; i--) h2 = ((h2 << 5) + h2 + str.charCodeAt(i)) & 0x7fffffff;
+    return "h" + h.toString(16) + "-" + h2.toString(16);
+  }
+  function pwdStored() { try { return localStorage.getItem(PWD_KEY) || ""; } catch (e) { return ""; } }
+  function pwdCheck(p) {
+    var st = pwdStored();
+    if (!st) return String(p) === PWD_DEFAULT;
+    return pwdHash(p) === st;
+  }
+  function pwdSet(p) { try { localStorage.setItem(PWD_KEY, pwdHash(p)); } catch (e) {} }
+  function pwdSaveOn() { try { return localStorage.getItem(PWD_SAVE_KEY) === "1"; } catch (e) { return false; } }
+  function pwdSetSave(on) { try { localStorage.setItem(PWD_SAVE_KEY, on ? "1" : "0"); } catch (e) {} }
+  function pwdLockStyle() {
+    if (document.getElementById("pwdLockStyle")) return;
+    var st = document.createElement("style");
+    st.id = "pwdLockStyle";
+    st.textContent = ".pwdlock{position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#0d2137,#123a5e 60%,#0d2137);color:#e8eef6}"
+      + ".pwdlock .box{width:min(92vw,380px);background:rgba(9,26,44,.92);border:1px solid rgba(61,169,252,.35);border-radius:16px;padding:22px 20px;box-shadow:0 18px 48px rgba(0,0,0,.45)}"
+      + ".pwdlock h3{margin:0 0 6px;font-size:18px}.pwdlock .hint{font-size:12px;color:#9fb6cd;line-height:1.7}"
+      + ".pwdlock .inp{width:100%;margin-top:10px}.pwdlock .row{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:#cfe0f2}"
+      + ".pwdlock .err{color:#ff9a9a;font-size:12px;min-height:16px;margin-top:6px}.pwdlock .acts{display:flex;gap:8px;margin-top:14px}.pwdlock .acts .btn{flex:1}";
+    (document.head || document.documentElement).appendChild(st);
+  }
+  // 启动口令锁屏
+  function showPwdLock() {
+    pwdLockStyle();
+    var old = document.getElementById("pwdLock");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var d = document.createElement("div");
+    d.id = "pwdLock";
+    d.className = "pwdlock";
+    d.innerHTML = '<div class="box">'
+      + '<h3>请输入启动口令</h3>'
+      + '<div class="hint">首次使用默认口令 <b>3305</b>。进入后可在「设置 → 修改密码」中更改。</div>'
+      + '<input id="pwdInput" class="inp" type="password" inputmode="numeric" autocomplete="off" placeholder="启动口令">'
+      + '<label class="row"><input id="pwdRemember" type="checkbox"/> 保存密码，下次不用输入</label>'
+      + '<div class="err" id="pwdErr"></div>'
+      + '<div class="acts"><button class="btn ghost" id="pwdForgot">忘记密码</button>'
+      + '<button class="btn primary" id="pwdOk">进入</button></div>'
+      + '<div class="hint" id="pwdForgotTip" style="margin-top:10px;display:none">忘记密码请联系开发者，分机号 <b>' + DEV_EXT_NO + '</b>。</div>'
+      + '</div>';
+    document.body.appendChild(d);
+    function go() {
+      var v = (document.getElementById("pwdInput") || {}).value || "";
+      if (!pwdCheck(v)) {
+        var e = document.getElementById("pwdErr");
+        if (e) e.textContent = "口令不正确，请重新输入";
+        try { if (navigator.vibrate) navigator.vibrate(60); } catch (_) {}
+        return;
+      }
+      pwdSetSave(!!((document.getElementById("pwdRemember") || {}).checked));
+      if (d.parentNode) d.parentNode.removeChild(d);
+    }
+    var ok = document.getElementById("pwdOk"); if (ok) ok.onclick = go;
+    var ip = document.getElementById("pwdInput");
+    if (ip) { ip.onkeydown = function (ev) { if (ev && ev.key === "Enter") go(); }; setTimeout(function () { try { ip.focus(); } catch (e) {} }, 60); }
+    var fg = document.getElementById("pwdForgot");
+    if (fg) fg.onclick = function () {
+      var t = document.getElementById("pwdForgotTip");
+      if (t) t.style.display = t.style.display === "none" ? "" : "none";
+    };
+  }
+  function bootPwdLock() {
+    try {
+      if (typeof HM_PROTECT !== "undefined" && HM_PROTECT.indexOf) {
+        if (HM_PROTECT.indexOf("changePwd") < 0) HM_PROTECT.push("changePwd");
+        if (HM_PROTECT.indexOf("forgotPwd") < 0) HM_PROTECT.push("forgotPwd");
+      }
+    } catch (e) {}
+    try {
+      if (pwdSaveOn()) return;
+      showPwdLock();
+    } catch (e) {}
+  }
+  // 设置子菜单：修改密码
+  function openChangePwd() {
+    openModal("修改密码",
+      '<div class="hint">修改后下次启动使用新口令（若已勾选保存密码，本机仍可直接进入）。</div>'
+      + '<div class="field"><label>当前口令</label><input id="pwOld" class="inp" type="password" autocomplete="off"></div>'
+      + '<div class="field"><label>新口令</label><input id="pwNew" class="inp" type="password" autocomplete="off" placeholder="4 位以上"></div>'
+      + '<div class="field"><label>确认新口令</label><input id="pwNew2" class="inp" type="password" autocomplete="off"></div>',
+      '<button class="btn ghost" id="pwCancel">取消</button><button class="btn primary" id="pwSave">保存</button>');
+    var c = el("pwCancel"); if (c) c.onclick = closeModal;
+    var s = el("pwSave");
+    if (s) s.onclick = function () {
+      var o = (el("pwOld") || {}).value || "", n = (el("pwNew") || {}).value || "", n2 = (el("pwNew2") || {}).value || "";
+      if (!pwdCheck(o)) { toast("当前口令不正确"); return; }
+      if (String(n).length < 4) { toast("新口令至少 4 位"); return; }
+      if (n !== n2) { toast("两次输入的新口令不一致"); return; }
+      pwdSet(n);
+      closeModal();
+      toast("口令已修改，请牢记（忘记请联系开发者，分机号 " + DEV_EXT_NO + "）");
+    };
+  }
+  // 设置子菜单：忘记密码
+  function openForgotPwd() {
+    openModal("忘记密码",
+      '<div class="hint">请联系开发者协助重置（分机号 <b>' + DEV_EXT_NO + '</b>）。<br/>'
+      + '开发者确认身份后可在本页输入分机号，将口令重置为默认 <b>' + PWD_DEFAULT + '</b>。<br/>'
+      + '<span style="color:#ffb4b4">重置只影响启动口令，不会删除任何业务数据。</span></div>'
+      + '<div class="field"><label>开发者分机号</label><input id="fgExt" class="inp" autocomplete="off" placeholder="请输入开发者分机号"></div>',
+      '<button class="btn ghost" id="fgCancel">关闭</button><button class="btn primary" id="fgReset">验证并重置</button>');
+    var c = el("fgCancel"); if (c) c.onclick = closeModal;
+    var r = el("fgReset");
+    if (r) r.onclick = function () {
+      var v = ((el("fgExt") || {}).value || "").trim();
+      if (v !== String(DEV_EXT_NO)) { toast("分机号不正确，请联系开发者（分机号 " + DEV_EXT_NO + "）"); return; }
+      try { localStorage.removeItem(PWD_KEY); } catch (e) {}
+      pwdSet(PWD_DEFAULT);
+      closeModal();
+      toast("口令已重置为默认 " + PWD_DEFAULT);
+    };
+  }
+  try { if (!window.__EXT_ACTS__) window.__EXT_ACTS__ = {}; } catch (e) {}
+  try { window.__EXT_ACTS__.changePwd = openChangePwd; window.__EXT_ACTS__.forgotPwd = openForgotPwd; } catch (e) {}
+  try {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootPwdLock);
+    else bootPwdLock();
+  } catch (e) {}
+  // ---------- /v2.4.9 启动口令保护 ----------
+
 })();
