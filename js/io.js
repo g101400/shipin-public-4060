@@ -507,7 +507,7 @@ ${places}
     return out;
   }
 
-  // ---------- 清源河格式（CSV 兼容）----------
+  // ---------- 潮河格式（CSV 兼容）----------
   function buildChaohe(records, cols) {
     const C = [
       { k: "name", t: "名称", g: (r) => r.name },
@@ -774,7 +774,7 @@ ${places}
     return rows;
   }
 
-  // 矩阵 -> 记录（按中文表头定位，兼容 新统一/清源河/奥维旧格式/任意超集）
+  // 矩阵 -> 记录（按中文表头定位，兼容 新统一/潮河/奥维旧格式/任意超集）
   function matrixToRecords(matrix) {
     if (!matrix.length) return [];
     var header = matrix[0].map(function (h) { return (h || "").trim(); });
@@ -800,7 +800,7 @@ ${places}
       }
       var descText = gi(row, ["说明", "Comment", "参数说明"]);
       var params = {};
-      // v2.4.9-C：条目分隔符同时接受 | ; 换行（奥维 comment 用 |，本 APP 历史导出用 ;，清源河用 ;）
+      // v2.4.9-C：条目分隔符同时接受 | ; 换行（奥维 comment 用 |，本 APP 历史导出用 ;，潮河用 ;）
       //            键值分隔同时接受 ASCII ":" 与全角 "："；空值键（如「备注:」）保留
       if (descText) descText.split(/[|;\r\n]+/).forEach(function (ln) {
         var line = String(ln == null ? "" : ln).trim();
@@ -1016,7 +1016,7 @@ ${places}
     exportKmz(records, root) { downloadBytes((root || "视频设备运维基础信息") + ".kmz", recordsToKmzBytes(records), "application/vnd.google-earth.kmz"); },
     exportKml(records, root) { downloadText((root || "视频设备运维基础信息") + ".kml", buildKML(records, root), "application/vnd.google-earth.kml+xml"); },
     exportCsv(records, root, cols) { downloadText((root || "视频设备运维基础信息") + ".csv", buildCsv(records, cols), "text/csv;charset=utf-8"); },
-    exportChaoheFile(records, root, cols) { downloadText((root || "视频设备运维基础信息") + "_清源河.csv", buildChaohe(records, cols), "text/csv;charset=utf-8"); },
+    exportChaoheFile(records, root, cols) { downloadText((root || "视频设备运维基础信息") + "_潮河.csv", buildChaohe(records, cols), "text/csv;charset=utf-8"); },
     parseAttrCsv, parseXlsxToRecords, parseXlsToRecords, xlsxMatrix, // xlsxMatrix 导出供 kb.js 外部文件智能转换（v2.4.5）
     buildAttrCsv, buildAttrXlsx, buildAttrXls,
     attrCsvOf: buildAttrCsv, attrXlsxOf: buildAttrXlsx, attrXlsOf: buildAttrXls,
