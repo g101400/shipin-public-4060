@@ -43,7 +43,7 @@
   <div class="menu">
     <!-- 置顶：查询 / 筛选（最高频，与一级分组并列） -->
     <button class="menu-btn pin" data-act="search"><span class="ico">🔍</span><span>查询<span class="sub">按名称 / 机构搜索</span></span></button>
-    <button class="menu-btn pin" data-act="filter"><span class="ico">🎛️</span><span>筛选<span class="sub">机构 / 摄像机类型</span></span></button>
+    <button class="menu-btn pin" data-act="filter"><span class="ico">🎛️</span><span>筛选<span class="sub">对象类别 / 机构 / 类型</span></span></button>
 
     <!-- 快捷常用（v2.4）：用户自选常用功能；右键/长按子菜单可增删 -->
     <div class="mgroup collapsible" data-grp="快捷常用">快捷常用<span class="tg">＋</span></div>
@@ -62,7 +62,10 @@
     <div class="mgroup collapsible" data-grp="数据管理">数据管理<span class="tg">＋</span></div>
     <div class="msub">
     <button class="menu-btn" data-act="add"><span class="ico">➕</span><span>添加监控点<span class="sub">点图选坐标，多照片</span></span></button>
+    <button class="menu-btn" data-act="addBld"><span class="ico">🏗️</span><span>添加水工建筑物<span class="sub">独立建筑物层 · 闸/桥/涵洞等</span></span></button>
+    <button class="menu-btn" data-act="addPlace"><span class="ico">📍</span><span>添加地点<span class="sub">有名且坐标无歧义的位置</span></span></button>
     <button class="menu-btn" data-act="import"><span class="ico">📥</span><span>导入<span class="sub">ovkmz / kmz / csv</span></span></button>
+    <button class="menu-btn" data-act="importBld"><span class="ico">🏗️</span><span>导入水工建筑物<span class="sub">只写建筑物层 · 不影响感知设备</span></span></button>
     <button class="menu-btn" data-act="batchPhotos"><span class="ico">🖼️</span><span>批量导入照片<span class="sub">文件夹/zip/网盘，智能匹配</span></span></button>
     <button class="menu-btn" data-act="batchSheets"><span class="ico">📑</span><span>批量导入监控点<span class="sub">表格/csv/xlsx/zip</span></span></button>
     <button class="menu-btn" data-act="export"><span class="ico">📤</span><span>导出<span class="sub">ovkmz / kmz / csv / 潮河</span></span></button>
@@ -104,6 +107,7 @@
         <div class="mgroup collapsible" data-grp="智能检索">智能检索<span class="tg">＋</span></div>
     <div class="msub">
     <button class="menu-btn" data-act="objParamSearch"><span class="ico">🔎</span><span>参数反查设备<span class="sub">按参数找对象 · 如宽度3米的闸门</span></span></button>
+    <button class="menu-btn" data-act="spatialStat"><span class="ico">🧭</span><span>周边对象统计<span class="sub">某建筑物周边有几个感知设备（km）</span></span></button>
     <button class="menu-btn" data-act="objStats"><span class="ico">📊</span><span>分类统计<span class="sub">类型数量统计 · Group By</span></span></button>
     <button class="menu-btn" data-act="objTypeDef"><span class="ico">📘</span><span>类型定义入库<span class="sub">类型含义向量化 · 写入本地知识库</span></span></button>
     <button class="menu-btn" data-act="objDocLink"><span class="ico">🔗</span><span>预案文档关联<span class="sub">切块关联对象 · 可查用途</span></span></button>
@@ -158,7 +162,7 @@
 
 <!-- 列表栏 -->
 <div class="listbar" id="listbar">
-  <div class="lhead"><span class="lt">监控点列表 <span class="cnt" id="listCnt"></span></span><span class="lx" id="listClose" title="关闭列表">×</span></div>
+  <div class="lhead"><span class="lt">对象列表 <span class="cnt" id="listCnt"></span></span><span class="lx" id="listClose" title="关闭列表">×</span></div>
   <div class="list-scroll" id="listScroll"></div>
 </div>
 
@@ -175,7 +179,7 @@
 <!-- 筛选状态条：实时显示命中监控点数，可一键清除 -->
 <div class="filter-bar" id="filterBar">
   <span class="fb-dot"></span>
-  <span class="fb-txt">筛选命中 <b id="fbCnt">0</b> 个监控点</span>
+  <span class="fb-txt">筛选命中 <b id="fbCnt">0</b> 个对象</span>
   <button class="fb-clear" id="fbClear">清除筛选</button>
 </div>
 
@@ -186,6 +190,8 @@
 <script src="js/imgutil.js"></script>
 <script src="js/io.js"></script>
 <script src="data.js"></script>
+<!-- v2.5.0 双数据层：水工建筑物独立数据层（独立文件，不进 data.js；与感知设备数据物理隔离） -->
+<script src="data_buildings.js"></script>
 <script src="platform_matrix.js"></script>
 <!-- 天地图 Token 配置：不同环境请替换对应的值 -->
 <script>
