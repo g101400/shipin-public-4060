@@ -25,7 +25,8 @@
   // 2: v2.0~v2.3      照片 thumb/full/fullPath 三态；ops_state 引入
   // 3: v2.4+          组织配置持久化(orgcfg)、quickfavs、类型管理
   // 4: v2.4.3+        备忘录/游记（journals）、升级备份包
-  var SCHEMA = 4;
+  // 5: v2.5.0+        双数据层：水工建筑物层独立键 delta_bld（顶层 addedBld/updatedBld/deletedBld）
+  var SCHEMA = 5;
   var MIN_READABLE_SCHEMA = 1;   // 本版本能读回的最低 schema
   var MAGIC = "YZT-BACKUP";      // 一张图家族备份包标识
 
@@ -179,6 +180,8 @@
       exportedAt: new Date().toISOString(),
       // ★ 顶层平铺 delta 三字段 = 旧版可直接导入（向后兼容的关键）
       added: [], updated: {}, deleted: [],
+      // v2.5.0 双数据层：水工建筑物层的本地改动（旧版读到会忽略，不报错，符合向后兼容约定）
+      addedBld: [], updatedBld: {}, deletedBld: {},
       localStore: {},
       checkins: [],
       journals: [],
@@ -194,9 +197,19 @@
     pkg.updated = delta.updated || {};
     pkg.deleted = delta.deleted || [];
 
+    // 1b) delta_bld（水工建筑物层，v2.5.0）：与设备层分开存放，导出也分开，绝不合并
+    var deltaBld = { added: [], updated: {}, deleted: [] };
+    if (global.Store && global.Store.bld && global.Store.bld.get) {
+      try { deltaBld = await global.Store.bld.get(); } catch (e) { pkg.warnings.push("读取建筑物层改动失败：" + e.message); }
+    }
+    pkg.addedBld = deltaBld.added || [];
+    pkg.updatedBld = deltaBld.updated || {};
+    pkg.deletedBld = deltaBld.deleted || [];
+
     // 2) 照片完整性：安卓端原图在磁盘(fullPath)，尽量回读内嵌，回读失败明确记账（不静默）
     var photoTotal = 0, embedded = 0, thumbOnly = 0;
-    var recs = [].concat(pkg.added, Object.keys(pkg.updated).map(function (k) { return pkg.updated[k]; }));
+    var recs = [].concat(pkg.added, Object.keys(pkg.updated).map(function (k) { return pkg.updated[k]; }),
+      pkg.addedBld, Object.keys(pkg.updatedBld).map(function (k) { return pkg.updatedBld[k]; }));
     for (var i = 0; i < recs.length; i++) {
       var ps = (recs[i] && recs[i].photos) || [];
       for (var j = 0; j < ps.length; j++) {
@@ -247,6 +260,11 @@
       added: pkg.added.length,
       updated: Object.keys(pkg.updated).length,
       deleted: (pkg.deleted || []).length,
+      // v2.5.0 水工建筑物层
+      recordsBld: (pkg.addedBld || []).length + Object.keys(pkg.updatedBld || {}).length,
+      addedBld: (pkg.addedBld || []).length,
+      updatedBld: Object.keys(pkg.updatedBld || {}).length,
+      deletedBld: (pkg.deletedBld || []).length,
       photos: photoTotal,
       photosEmbedded: embedded,
       photosThumbOnly: thumbOnly,
@@ -283,7 +301,7 @@
         var s = E("upExStat");
         if (!s) return;
         var body = JSON.stringify(p);
-        s.innerHTML = '将导出：<b>' + p.counts.records + '</b> 条记录改动 · <b>' + p.counts.photos + '</b> 张照片（内嵌原图 '
+        s.innerHTML = '将导出：<b>' + p.counts.records + '</b> 条感知设备改动 + <b>' + (p.counts.recordsBld || 0) + '</b> 条水工建筑物改动 · <b>' + p.counts.photos + '</b> 张照片（内嵌原图 '
           + p.counts.photosEmbedded + ' / 仅缩略图 ' + p.counts.photosThumbOnly + '）· 打卡 <b>' + p.counts.checkins
           + '</b> · 游记备忘 <b>' + p.counts.journals + '</b> · 知识库 <b>' + p.counts.kb + '</b> 条 · 偏好 <b>' + p.counts.prefs
           + '</b> 项<br>预估体积约 <b>' + sizeText(body.length) + '</b>'
@@ -462,7 +480,7 @@
         var withPrefs = !!(E("upImPrefs") && E("upImPrefs").checked);
         var rep = await applyPkg(pkg, mode, { withKB: withKB, withPrefs: withPrefs });
         global.closeModal();
-        var msg = "已还原：记录 " + rep.records + " 条 · 照片 " + rep.photos + " 张";
+        var msg = "已还原：感知设备 " + rep.records + " 条 · 水工建筑物 " + (rep.recordsBld || 0) + " 条 · 照片 " + rep.photos + " 张";
         if (rep.checkins) msg += " · 打卡 " + rep.checkins;
         if (rep.journals) msg += " · 游记备忘 " + rep.journals;
         if (rep.kb) msg += " · 知识库 " + rep.kb;
@@ -504,6 +522,31 @@
     rep.records = (next.added || []).length + Object.keys(next.updated || {}).length;
     [].concat(next.added || [], Object.keys(next.updated || {}).map(function (k) { return next.updated[k]; }))
       .forEach(function (r) { rep.photos += ((r && r.photos) || []).length; });
+
+    // 1b) delta_bld（水工建筑物层，v2.5.0）：与设备层同样的合并策略，但写独立键
+    if ((pkg.addedBld && pkg.addedBld.length) || (pkg.updatedBld && Object.keys(pkg.updatedBld).length) || (pkg.deletedBld && pkg.deletedBld.length) || (pkg.counts && pkg.counts.recordsBld)) {
+      if (global.Store && global.Store.bld && global.Store.bld.set) {
+        var curB = { added: [], updated: {}, deleted: [] };
+        try { curB = await global.Store.bld.get(); } catch (e) {}
+        var nextB;
+        if (mode === "replace") {
+          nextB = { added: (pkg.addedBld || []).slice(), updated: Object.assign({}, pkg.updatedBld || {}), deleted: (pkg.deletedBld || []).slice() };
+        } else {
+          var byIdB = {};
+          (curB.added || []).forEach(function (r) { if (r && r.id) byIdB[r.id] = r; });
+          (pkg.addedBld || []).forEach(function (r) { if (r && r.id && !byIdB[r.id]) byIdB[r.id] = r; });
+          nextB = {
+            added: Object.keys(byIdB).map(function (k) { return byIdB[k]; }),
+            updated: Object.assign({}, pkg.updatedBld || {}, curB.updated || {}),
+            deleted: Array.from(new Set([].concat(curB.deleted || [], pkg.deletedBld || [])))
+          };
+        }
+        await global.Store.bld.set(nextB);
+        rep.recordsBld = (nextB.added || []).length + Object.keys(nextB.updated || {}).length;
+      } else {
+        pkg.warnings && pkg.warnings.push("本版本未提供建筑物层存储，已跳过水工建筑物层还原");
+      }
+    }
 
     // 2) 打卡
     if (global.Store.checkins && (pkg.checkins || []).length) {
