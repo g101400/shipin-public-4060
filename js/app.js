@@ -116,22 +116,66 @@
     html: `<svg width="28" height="40" viewBox="0 0 28 40" xmlns="http://www.w3.org/2000/svg"><path d="M14 38 C 20 28 26 22 26 14 A 12 12 0 1 1 2 14 C 2 22 8 28 14 38 Z" fill="#2ecc8f" stroke="#1d8f63" stroke-width="1.5"/><circle cx="14" cy="14" r="5" fill="#ffffff"/></svg>`,
     iconSize: [28, 40], iconAnchor: [14, 38], popupAnchor: [0, -30]
   });
+  /* v2.5.0 水工建筑物标记：琥珀色方形底座（一眼与蓝色水滴状感知设备区分开）。
+   * 需求二「水工建筑物作为基础底图」→ 建筑物在下层、设备在上层，形状与配色双重区分。 */
+  const BLD_MARKER = L.divIcon({
+    className: "bld-marker",
+    html: `<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg"><path d="M13 1 L25 9 L25 25 L13 33 L1 25 L1 9 Z" fill="#f0a24b" stroke="#a9660f" stroke-width="1.5"/><rect x="8" y="13" width="10" height="8" rx="1" fill="#fff8ec"/></svg>`,
+    iconSize: [26, 34], iconAnchor: [13, 32], popupAnchor: [0, -26]
+  });
+  const BLD_FILTER_MARKER = L.divIcon({
+    className: "bld-marker-filter",
+    html: `<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg"><path d="M13 1 L25 9 L25 25 L13 33 L1 25 L1 9 Z" fill="#2ecc8f" stroke="#1d8f63" stroke-width="1.5"/><rect x="8" y="13" width="10" height="8" rx="1" fill="#f2fff8"/></svg>`,
+    iconSize: [26, 34], iconAnchor: [13, 32], popupAnchor: [0, -26]
+  });
 
   // 全局版本号（单一事实来源：关于 / 版本变更 / 帮助 均引用此处，避免硬编码漂移）
-  const APP_VER = "v2.4.9";
+  const APP_VER = "v2.5.0";
 
   // ---------- 状态 ----------
   let BASE = [], DELTA = { added: [], updated: {}, deleted: [] }, records = [];
+  /* v2.5.0 双数据层（需求二/三）：水工建筑物 = 独立数据文件 data_buildings.js + 独立 store 键
+   * delta_bld + 独立 id 空间（载入时统一加 "bld:" 前缀）。
+   * 设备层（records / DELTA / data.js）这一路的代码路径一行未动 —— 需求四明确「原来感知设备
+   * 导入导出功能保持不变」，所以分层只做「新增一路」，不改「原有那路」。 */
+  let BASE_BLD = [], DELTA_BLD = { added: [], updated: {}, deleted: [] }, recordsBld = [];
+  const LAYER_DEV = "dev", LAYER_BLD = "bld", BLD_PREFIX = "bld:";
+  const LAYERS = [
+    { key: LAYER_DEV, label: "感知设备", icon: "📡", sub: "监控点 / 摄像机" },
+    { key: LAYER_BLD, label: "水工建筑物", icon: "🏗️", sub: "闸·桥·涵洞等，含命名地点" }
+  ];
+  const isBld = (r) => !!r && r.layer === LAYER_BLD;
+  const bldIdOf = (raw) => { const s = String(raw == null ? "" : raw); return s.indexOf(BLD_PREFIX) === 0 ? s : BLD_PREFIX + s; };
+  const rawIdOf = (id) => String(id == null ? "" : id).replace(new RegExp("^" + BLD_PREFIX), "");
+  const layerLabel = (r) => isBld(r) ? "水工建筑物" : "感知设备";
+  // 按 id 在「两层合并视图」里找对象（设备优先，但两层 id 空间已被前缀隔离，不会串）
+  function findRec(id) { return records.find((x) => x.id === id) || recordsBld.find((x) => x.id === id) || null; }
+  function layerOn(k) { return Array.isArray(filter.layers) && filter.layers.length ? filter.layers.includes(k) : k === LAYER_DEV; }
+  function shownRecords() {
+    const out = [];
+    if (layerOn(LAYER_BLD)) out.push.apply(out, recordsBld);   // 建筑物在下层（基础底图）
+    if (layerOn(LAYER_DEV)) out.push.apply(out, records);      // 设备在上层
+    return out;
+  }
   let map, layerGroup, overlayGroup;
   let filterCircle = null; // 筛选命中绿色虚线圆圈（v2.4.4 与古建端统一）
-  const filterActive = () => !!(filter.office.length || filter.btype.length || (filter.q && filter.q.trim()) || (filter.photo && filter.photo.mode !== "all"));
+  const filterActive = () => !!(filter.office.length || filter.btype.length || (filter.q && filter.q.trim()) || (filter.photo && filter.photo.mode !== "all")
+    || (filter.btypeBld || []).length || (filter.officeBld || []).length || (filter.mgmtBld || []).length || (filter.kindBld || []).length);
   let vecLayer = null, cvaLayer = null, imgLayer = null, ciaLayer = null, basemapOn = false, layerType = "vec";
   let lastCenter = null, myLoc = null, myLocMarker = null;
   let measureMode = false, measurePts = [], measureLine = null;
-  let nearbyCenter = null, nearbyRadius = null, nearbyCircle = null, nearbyBtypes = [];
+  let nearbyCenter = null, nearbyRadius = null, nearbyCircle = null, nearbyBtypes = [], nearbyBtypesBld = [];
   const DEFAULT_CENTER = [40.30876, 116.61107]; // 怀柔水库所 质心
   const DEFAULT_ZOOM = 12;
-  const filter = { office: [], mgmt: [], btype: [], subsys: [], midcat: [], subcat: [], trans: [], q: "", photo: { mode: "all", min: 0 } };
+  /* filter.layers = 对象类别选择器（需求四-b）：默认只勾「感知设备」，水工建筑物默认不勾。
+   * filter.* = 感知设备口径；filter.*Bld = 水工建筑物口径（两层字段语义不同，各用各的，
+   * 避免水利 office=管理所 与感知 office=管理处 两套口径混在同一个下拉里串味）。 */
+  const filter = {
+    layers: [LAYER_DEV], office: [], mgmt: [], btype: [], subsys: [], midcat: [], subcat: [], trans: [], q: "", photo: { mode: "all", min: 0 },
+    btypeBld: [], officeBld: [], mgmtBld: [], kindBld: []
+  };
+  // 周边统计半径（Q6 用户口径：km 为单位、用户填入、默认 0.5km；内部计算仍用米）
+  let spatialRadiusKm = 0.5;
   let pickMode = false, pendingLatLng = null, editId = null, formPhotos = [];
   let coordResult = null, pickForCoord = false;   // 获取经纬度：地图点选回填
   // 批量导入缓冲（原生逐文件回调）
@@ -304,6 +348,17 @@
   }
 
   // ---------- 数据 ----------
+  // v2.5.0 双数据层：建筑物层独立文件、独立 store 键；载入时统一给 id 加 "bld:" 前缀
+  async function loadBuildings() {
+    let json = null;
+    if (window.__DATA_BLD__ && window.__DATA_BLD__.features) {
+      json = window.__DATA_BLD__;                       // 离线/APK 场景：内嵌数据
+    } else {
+      try { const res = await fetch("data_buildings.json"); if (res.ok) json = await res.json(); } catch (e) { json = null; }
+    }
+    BASE_BLD = ((json && json.features) || []).map((r) => Object.assign({}, r, { id: bldIdOf(r.id), layer: LAYER_BLD }));
+    try { DELTA_BLD = await Store.bld.get(); } catch (e) { DELTA_BLD = { added: [], updated: {}, deleted: [] }; }
+  }
   async function load() {
     let json;
     if (window.__DATA__ && window.__DATA__.features) {
@@ -314,19 +369,26 @@
     }
     BASE = json.features || [];
     DELTA = await Store.get();
+    await loadBuildings();
     applyDims();
     merge();
     render();
   }
-  function merge() {
-    const del = new Set(DELTA.deleted || []);
-    records = [];
-    for (const r of BASE) {
+  // 单层合并（设备层/建筑物层同一套逻辑，只是 base 与 delta 来源不同）
+  function mergeLayer(base, delta, layer) {
+    const del = new Set(delta.deleted || []);
+    const out = [];
+    for (const r of base) {
       if (del.has(r.id)) continue;
-      const up = DELTA.updated[r.id];
-      records.push(up ? Object.assign({}, r, up) : r);
+      const up = delta.updated[r.id];
+      out.push(Object.assign({}, up ? Object.assign({}, r, up) : r, { layer: layer }));
     }
-    for (const a of (DELTA.added || [])) records.push(a);
+    for (const a of (delta.added || [])) out.push(Object.assign({}, a, { layer: layer }));
+    return out;
+  }
+  function merge() {
+    records = mergeLayer(BASE, DELTA, LAYER_DEV);
+    recordsBld = mergeLayer(BASE_BLD, DELTA_BLD, LAYER_BLD);
     applyDims();
   }
   // ---------- 组织层级配置（v2.4 五级化：局/管理处/所/站/段 · 与水利端同构同步）----------
@@ -423,11 +485,41 @@
     DIMS.midcat = uniq([...records.map((r) => r.midcat).filter(Boolean), ...(ORGCFG.midcatExtra || [])]);
     DIMS.subcat = uniq([...records.map((r) => r.subcat).filter(Boolean), ...(ORGCFG.subcatExtra || [])]);
     DIMS.trans = uniq([...records.map((r) => r.trans).filter(Boolean), ...(ORGCFG.transExtra || [])]);
+    // v2.5.0 双数据层：水工建筑物层自有维度（水利口径：office=管理所、station=段、mgmt=管理处）
+    // 与设备层刻意分开成 4 个独立数组，杜绝两套同名不同义的字段混进同一个下拉
+    DIMS.btypesBld = uniq(recordsBld.filter((r) => (r.kind || "building") !== "place").map((r) => r.btype).filter(Boolean));
+    DIMS.officesBld = uniq(recordsBld.map((r) => normOffice(orgVal(r, "office"))).filter(Boolean));
+    DIMS.mgmtsBld = uniq(recordsBld.map((r) => orgVal(r, "mgmt")).filter(Boolean));
+    DIMS.kindsBld = uniq(recordsBld.map((r) => r.kind || "building").filter(Boolean));
+    DIMS.stationsBld = uniq(recordsBld.map((r) => r.station).filter(Boolean));
+    DIMS.sectionsBld = uniq(recordsBld.map((r) => r.section).filter(Boolean));
   }
-  const DIMS = { bureaus: [], mgmts: [], offices: [], stations: [], sections: [], btypes: [], subsys: [], midcat: [], subcat: [], trans: [] };
+  const DIMS = { bureaus: [], mgmts: [], offices: [], stations: [], sections: [], btypes: [], subsys: [], midcat: [], subcat: [], trans: [],
+    btypesBld: [], officesBld: [], mgmtsBld: [], kindsBld: [], stationsBld: [], sectionsBld: [] };
   function uniq(a) { return [...new Set(a)].sort(); }
 
   function passFilter(r) {
+    // 对象类别（需求四-b）：两层各自只跑自己那套条件；未勾选的层直接不参与
+    if (isBld(r)) {
+      if (!layerOn(LAYER_BLD)) return false;
+      if (filter.mgmtBld.length && !filter.mgmtBld.includes(orgVal(r, "mgmt"))) return false;
+      if (filter.officeBld.length && !filter.officeBld.includes(normOffice(orgVal(r, "office")))) return false;
+      if (filter.btypeBld.length && !filter.btypeBld.includes(r.btype)) return false;
+      if (filter.kindBld.length && !filter.kindBld.includes(r.kind || "building")) return false;
+      if (filter.photo && filter.photo.mode !== "all") {
+        const cnt = (r.photos || []).length;
+        if (filter.photo.mode === "has" && cnt <= 0) return false;
+        if (filter.photo.mode === "none" && cnt > 0) return false;
+        if (filter.photo.mode === "min" && cnt < (filter.photo.min || 0)) return false;
+      }
+      if (filter.q && !matchKeyword(r, filter.q)) return false;
+      if (nearbyCenter && nearbyRadius != null) {
+        if (haversine(nearbyCenter, { lat: r.lat, lon: r.lon }) > nearbyRadius) return false;
+        if (nearbyBtypesBld.length && !nearbyBtypesBld.includes(r.btype)) return false;
+      }
+      return true;
+    }
+    if (!layerOn(LAYER_DEV)) return false;
     if (filter.office.length && !filter.office.includes(normOffice(orgVal(r, "office")))) return false;
     if (filter.mgmt.length && !filter.mgmt.includes(orgVal(r, "mgmt"))) return false;
     if (filter.btype.length && !filter.btype.includes(r.btype)) return false;
@@ -441,12 +533,24 @@
       if (filter.photo.mode === "none" && cnt > 0) return false;
       if (filter.photo.mode === "min" && cnt < (filter.photo.min || 0)) return false;
     }
-    if (filter.q && !`${r.name}${r.office}${r.station}${r.btype}`.toLowerCase().includes(filter.q.toLowerCase())) return false;
+    if (filter.q && !matchKeyword(r, filter.q)) return false;
     if (nearbyCenter && nearbyRadius != null) {
       if (haversine(nearbyCenter, { lat: r.lat, lon: r.lon }) > nearbyRadius) return false;
       if (nearbyBtypes.length && !nearbyBtypes.includes(r.btype)) return false;
     }
     return true;
+  }
+  // 关键词匹配（查询）：两层共用一个查询框，但各自匹配自己那套字段
+  function matchKeyword(r, q) {
+    const kw = String(q || "").trim().toLowerCase();
+    if (!kw) return true;
+    if (isBld(r)) {
+      return [r.name, r.office, r.station, r.btype, r.mgmt, r.description].filter(Boolean).join(" ").toLowerCase().includes(kw);
+    }
+    const wide = [r.name, r.office, normOffice(r.office), r.station, r.btype, r.subsys, r.midcat, r.subcat, r.trans].filter(Boolean).join(" ").toLowerCase();
+    if (wide.includes(kw)) return true;
+    // 兼容旧口径：顶栏查询原按「名称+机构+库渠+类型」无缝拼接匹配（跨字段连写关键词也能命中），此处保留
+    return `${r.name}${r.office}${r.station}${r.btype}`.toLowerCase().includes(kw);
   }
 
   // ---------- UI 状态持久化 ----------
@@ -460,6 +564,15 @@
       filter.midcat = Array.isArray(s.midcat) ? s.midcat : [];
       filter.subcat = Array.isArray(s.subcat) ? s.subcat : [];
       filter.trans = Array.isArray(s.trans) ? s.trans : [];
+      // v2.5.0 对象类别：老用户的 UI 快照里没有 layers 字段 → 必须回落成「感知设备」，
+      // 否则升级后地图会莫名变空（默认只勾感知设备，与需求四-b 一致）
+      filter.layers = (Array.isArray(s.layers) ? s.layers : []).filter((k) => k === LAYER_DEV || k === LAYER_BLD);
+      if (!filter.layers.length) filter.layers = [LAYER_DEV];
+      filter.btypeBld = Array.isArray(s.btypeBld) ? s.btypeBld : [];
+      filter.officeBld = Array.isArray(s.officeBld) ? s.officeBld : [];
+      filter.mgmtBld = Array.isArray(s.mgmtBld) ? s.mgmtBld : [];
+      filter.kindBld = Array.isArray(s.kindBld) ? s.kindBld : [];
+      spatialRadiusKm = (typeof s.spatialKm === "number" && s.spatialKm > 0) ? s.spatialKm : 0.5;
       basemapOn = s.basemap === true;
       layerType = (s.layer === "img") ? "img" : "vec";
       lastCenter = s.center || null;
@@ -467,13 +580,16 @@
       // 首次打开：默认「水库所」(非全部)，仅载该所监控点→开图更快不卡顿；不加载底图
       filter.mgmt = [orgDefault("mgmt")];
       filter.office = (Array.isArray(orgDefault("office")) ? orgDefault("office") : [orgDefault("office")]).filter(Boolean);
+      filter.layers = [LAYER_DEV];
       basemapOn = false;
       layerType = "vec";
       lastCenter = null;
     }
   }
   function saveUI() {
-    Store.ui.set({ office: filter.office, mgmt: filter.mgmt, btype: filter.btype, subsys: filter.subsys, midcat: filter.midcat, subcat: filter.subcat, trans: filter.trans, basemap: basemapOn, layer: layerType, center: lastCenter });
+    Store.ui.set({ office: filter.office, mgmt: filter.mgmt, btype: filter.btype, subsys: filter.subsys, midcat: filter.midcat, subcat: filter.subcat, trans: filter.trans,
+      layers: filter.layers, btypeBld: filter.btypeBld, officeBld: filter.officeBld, mgmtBld: filter.mgmtBld, kindBld: filter.kindBld, spatialKm: spatialRadiusKm,
+      basemap: basemapOn, layer: layerType, center: lastCenter });
   }
 
   // ---------- 地图 ----------
@@ -588,15 +704,17 @@
   function render() {
     layerGroup.clearLayers();
     if (filterCircle) { overlayGroup.removeLayer(filterCircle); filterCircle = null; }
-    const ic = filterActive() ? FILTER_MARKER : MARKER;
+    const sel = shownRecords();
+    const filt = filterActive();
     let n = 0;
-    for (const r of records) {
+    for (const r of sel) {
       if (!passFilter(r)) continue;
       const lat = +r.lat, lon = +r.lon;
       // 非法坐标（NaN/Infinity，常见于导入的线/面/无坐标要素）直接跳过，避免 Leaflet 抛错
       if (!isFinite(lat) || !isFinite(lon)) continue;
       n++;
-      const m = L.marker([lat, lon], { icon: ic }).bindPopup(popupHtml(r));
+      const icon = isBld(r) ? (filt ? BLD_FILTER_MARKER : BLD_MARKER) : (filt ? FILTER_MARKER : MARKER);
+      const m = L.marker([lat, lon], { icon: icon }).bindPopup(popupHtml(r));
       m._rid = r.id;
       m.on("click", () => { if (measureMode) addMeasurePt({ lat: lat, lon: lon }); });
       m.on("contextmenu", (e) => { if (e && e.originalEvent) { L.DomEvent.stop(e); e.originalEvent.preventDefault(); } openCtxMenu(e.originalEvent.clientX, e.originalEvent.clientY, ctxItemsFor(r)); });
@@ -607,14 +725,14 @@
       if (nearbyCircle) overlayGroup.removeLayer(nearbyCircle);
       nearbyCircle = L.circle([nearbyCenter.lat, nearbyCenter.lon], { radius: nearbyRadius, color: "#3da9fc", weight: 1.5, fillColor: "#3da9fc", fillOpacity: 0.08 }).addTo(overlayGroup);
     }
-    el("listCnt") && (el("listCnt").textContent = `${n} / ${records.length}`);
+    el("listCnt") && (el("listCnt").textContent = `${n} / ${sel.length}`);
     updateFilterBar();
     renderList();
   }
   // 筛选状态条：实时显示命中监控点数，无筛选时隐藏
   function updateFilterBar() {
     const bar = el("filterBar"); if (!bar) return;
-    const rs = records.filter(passFilter);
+    const rs = shownRecords().filter(passFilter);
     if (filterActive()) {
       el("fbCnt").textContent = rs.length;
       bar.classList.add("show");
@@ -665,6 +783,8 @@
   // 清除筛选：清空条件、搜索框与圆圈，恢复正常蓝色正水滴
   function clearFilter() {
     filter.office = []; filter.btype = []; filter.q = ""; filter.photo = { mode: "all", min: 0 };
+    filter.mgmt = []; filter.subsys = []; filter.midcat = []; filter.subcat = []; filter.trans = [];
+    filter.btypeBld = []; filter.officeBld = []; filter.mgmtBld = []; filter.kindBld = [];
     const s = el("search"); if (s) s.value = "";
     if (filterCircle) { overlayGroup.removeLayer(filterCircle); filterCircle = null; }
     render(); saveUI();
@@ -674,25 +794,29 @@
   // 防御性全局别名：兼容旧构建/外部 HTML 的 onclick 引用，避免 ReferenceError
 window.LIDNotifyld = function () {};
 function showAllParams(id) {
-  const r = (typeof records !== "undefined" ? records : []).find((x) => x && x.id === id);
-  if (!r) return toast("未找到该建筑物");
+  const r = (typeof findRec === "function" ? findRec(id) : null) || (typeof records !== "undefined" ? records.find((x) => x && x.id === id) : null);
+  if (!r) return toast("未找到该对象");
   const rows = Object.keys(r.params || {}).map((k) => `<tr><td class="k">${esc(k)}</td><td>${esc(r.params[k])}</td></tr>`).join("");
-  const sub = esc([r.office || r.city, r.station, r.btype || r.atype].filter(Boolean).join(" / "));
+  const sub = esc([layerLabel(r), r.mgmt, r.office || r.city, r.station, r.btype || r.atype].filter(Boolean).join(" / "));
   const html = `<div class="hint">${sub}</div><div class="pop-params" style="max-height:60vh;overflow:auto">${rows ? `<table>${rows}</table>` : '<div class="hint">无参数</div>'}</div>`;
   openModal("完整参数 · " + esc(r.name), html, `<button class="btn primary" onclick="APP.close()">关闭</button>`);
 }
 
 function popupHtml(r) {
-    const tag = [r.office, r.station, r.btype].filter(Boolean).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
+    const bld = isBld(r);
+    const tagList = bld ? [orgVal(r, "mgmt"), r.office, r.station, r.btype] : [r.office, r.station, r.btype];
+    const tag = [`<span class="tag ${bld ? "tag-bld" : "tag-dev"}">${bld ? "🏗️ 水工建筑物" : "📡 感知设备"}</span>`]
+      .concat(tagList.filter(Boolean).map((t) => `<span class="tag">${esc(t)}</span>`)).join("");
     const rows = Object.keys(r.params || {}).map((k) => `<tr><td class="k">${esc(k)}</td><td>${esc(r.params[k])}</td></tr>`).join("");
     // 弹窗照片封顶 18 张（超出显示 +N），避免单点照片过多拖慢地图弹窗（item 2）
     const allPh = (r.photos || []);
     const shownPh = allPh.slice(0, 18);
     const extraPh = allPh.length - shownPh.length;
-    const ph = shownPh.map((p, i) => `<img src="${p.dataUrl || ""}" data-rid="${r.id}" data-pi="${i}" onclick="APP.viewPhotos('${r.id}')">`).join("") + (extraPh > 0 ? `<div class="th-more">+${extraPh} 张</div>` : "");
+    const ph = shownPh.map((p, i) => `<img src="${p.dataUrl || p.thumb || ""}" data-rid="${r.id}" data-pi="${i}" onclick="APP.viewPhotos('${r.id}')">`).join("") + (extraPh > 0 ? `<div class="th-more">+${extraPh} 张</div>` : "");
     const navBtn = `<button class="btn ok" onclick="APP.navigate('${r.id}')">导航</button>`;
     const detailBtn = `<button class="btn ghost" onclick="APP.showAllParams('${r.id}')">完整参数</button>`;
     const nearBtn = `<button class="btn ghost" onclick="APP.nearCenter('${r.id}')">以此为周边中心</button>`;
+    const relBtn = `<button class="btn ghost" onclick="APP.spatialFor('${r.id}')">周边对象统计</button>`;
     return `<div class="pop"><h3>${esc(r.name)}</h3>${tag}
       <div class="pop-params">${rows ? `<table>${rows}</table>` : '<div class="hint">无参数</div>'}</div>
       ${ph ? `<div class="thumbs">${ph}</div>` : ""}
@@ -703,7 +827,7 @@ function popupHtml(r) {
         <button class="btn ghost" onclick="APP.shareBuilding('${r.id}')">分享</button>
         <button class="btn danger" onclick="APP.del('${r.id}')">删除</button>
       </div>
-      <div class="pop-actions" style="margin-top:6px">${nearBtn}</div></div>`;
+      <div class="pop-actions" style="margin-top:6px">${nearBtn}${relBtn}</div></div>`;
   }
 
   function esc(s) { return IO.escapeXml(s); }
@@ -722,7 +846,7 @@ function popupHtml(r) {
       layerGroup.eachLayer((m) => { if (m._rid === r.id) m.openPopup(); });
     } else {
       // 沉默失败→明确提示，不再"点了没反应"
-      toast("该监控点缺少有效坐标，无法定位");
+      toast("该" + layerLabel(r) + "缺少有效坐标，无法定位");
     }
     el("listbar").classList.remove("open");
   }
@@ -730,12 +854,14 @@ function popupHtml(r) {
   function renderList() {
     const box = el("listScroll"); if (!box) return;
     box.innerHTML = "";
-    const rs = records.filter(passFilter);
+    const rs = shownRecords().filter(passFilter);
     for (const r of rs) {
       const div = document.createElement("div");
       div.className = "li";
+      const bld = isBld(r);
+      const meta = (bld ? [orgVal(r, "mgmt"), r.office, r.station, r.btype] : [r.office, r.station, r.btype]).filter(Boolean).join(" / ");
       // 名称后徽标：基础数据→"快速定位"（可点进地图），用户新增→"新增"
-      div.innerHTML = `<div><div class="nm">${esc(r.name)}</div><div class="mt">${esc([r.office, r.station, r.btype].filter(Boolean).join(" / "))}</div></div><span class="badge locbtn">${r.base ? "快速定位 →" : "新增"}</span>`;
+      div.innerHTML = `<div><div class="nm"><span class="ltag ${bld ? "ltag-bld" : "ltag-dev"}">${bld ? "建筑物" : "设备"}</span>${esc(r.name)}</div><div class="mt">${esc(meta)}</div></div><span class="badge locbtn">${r.base ? "快速定位 →" : "新增"}</span>`;
       div.dataset.id = r.id;
       div.onclick = () => locateInMap(r);
       div.addEventListener("contextmenu", (e) => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, ctxItemsFor(r)); });
@@ -754,15 +880,27 @@ function popupHtml(r) {
     try { localStorage.setItem(KW_HIST_KEY, JSON.stringify(a)); } catch (e) {}
   }
   // ---------- 筛选（v2.4：多选管理处/管理所/信息系统分类/感知子系统/中类/子类/信息传输方式）----------
+  // v2.5.0 水工建筑物对象子类（Q4 决策：「地点」= 建筑物层内的命名地点子类）
+  const BLD_KINDS = [
+    { key: "building", label: "建筑物", icon: "🏗️" },
+    { key: "place", label: "命名地点", icon: "📍" }
+  ];
   function openFilter() {
     const kwHist = loadKwHist();
     const group = (title, arr, sel) =>
       `<div class="fgroup"><div class="ftitle">${title}（<b class="cnt">${sel.length}</b> 已选）</div><div class="chips">` +
       (arr.length ? arr.map((v) => `<span class="chip ${sel.includes(v) ? "on" : ""}" data-grp="${title}" data-v="${esc(v)}">${esc(v)}</span>`).join("") : `<span class="hint">无</span>`) +
       `</div></div>`;
+    // v2.5.0 对象类别（需求四-b）：两层各成一组，默认只勾「感知设备」
+    const layerGroup = () =>
+      `<div class="fgroup" id="fgLayers"><div class="ftitle">对象类别（<b class="cnt" id="layCnt">${filter.layers.length}</b> 已选）</div><div class="chips">` +
+      LAYERS.map((L) => `<span class="chip ${filter.layers.includes(L.key) ? "on" : ""}" data-layer="${L.key}">${L.icon} ${L.label}${L.key === LAYER_DEV ? "（默认）" : ""}</span>`).join("") +
+      `</div><div class="hint" style="font-size:12px">对象类别决定地图 / 列表 / 查询 / 导出显示哪一层。两层数据、导入通道、本地存储键完全独立 —— <b>导入水工建筑物永远不会影响或覆盖感知设备</b>；原来的感知设备导入/导出行为保持不变。</div></div>`;
     const html =
       `<div class="hint">可多选：管理处与管理所（如 温泉所）、信息系统分类（如 摄像机/节制闸）、感知子系统/中类/子类/信息传输方式。选择管理所会自动定位到其范围中心；不选则显示全部。</div>` +
       (filter.q && filter.q.trim() ? `<div class="fqhint">🔎 当前查询关键词：<b>${esc(filter.q.trim())}</b><span class="fqsub">（筛选在此基础上叠加，下方命中数已计入）</span></div>` : "") +
+      layerGroup() +
+      `<div id="fgDevBox">` +
       group("管理处", DIMS.mgmts, filter.mgmt) +
       group("管理所", DIMS.offices, filter.office) +
       group("信息系统分类", DIMS.btypes, filter.btype) +
@@ -770,6 +908,16 @@ function popupHtml(r) {
       group("中类", DIMS.midcat, filter.midcat) +
       group("子类", DIMS.subcat, filter.subcat) +
       group("信息传输方式", DIMS.trans, filter.trans) +
+      `</div>` +
+      `<div id="fgBldBox"${filter.layers.includes(LAYER_BLD) ? "" : ' style="display:none"'}>` +
+      `<div class="fgroup"><div class="ftitle">水工建筑物 · 筛选条件</div><div class="hint" style="font-size:12px">以下四组只作用于水工建筑物层（水利口径：管理处 → 管理所 → 段 → 建筑物类型）。</div></div>` +
+      group("建筑物管理处", DIMS.mgmtsBld, filter.mgmtBld) +
+      group("建筑物管理所", DIMS.officesBld, filter.officeBld) +
+      group("建筑物类型", DIMS.btypesBld, filter.btypeBld) +
+      `<div class="fgroup"><div class="ftitle">对象子类（<b class="cnt">${filter.kindBld.length}</b> 已选）</div><div class="chips">` +
+      BLD_KINDS.map((k) => `<span class="chip ${filter.kindBld.includes(k.key) ? "on" : ""}" data-grp="对象子类" data-v="${k.key}">${k.icon} ${k.label}</span>`).join("") +
+      `</div><div class="hint" style="font-size:12px">「命名地点」只放常用的、有名的、坐标无歧义的位置（如天安门），不带工程参数、不参与建筑物类型统计。</div></div>` +
+      `</div>` +
       (kwHist.length ? `<div class="fgroup"><div class="ftitle collapsible" id="kwHistTog" style="cursor:pointer">🔎 关键词历史（<b class="cnt">${kwHist.length}</b>）<span class="tg">＋</span></div><div class="chips" id="kwHistBox" style="display:none">` + kwHist.map((k) => `<span class="chip kw" data-kw="${esc(k)}">${esc(k)}</span>`).join("") + `</div></div>` : "") +
       `<div class="fgroup"><div class="ftitle">照片</div><div class="chips" id="phFiltChips">` +
         `<span class="chip ${filter.photo.mode === "all" ? "on" : ""}" data-pm="all">全部</span>` +
@@ -787,6 +935,7 @@ function popupHtml(r) {
     openModal("筛选", html, `<button class="btn ghost" id="fExit">退出</button><button class="btn ghost" id="fReset">重置</button><button class="btn primary" id="fApply">应用</button>`);
     const body = el("modalBody");
     const liveCount = () => {
+      const lay = [...body.querySelectorAll('.chip[data-layer].on')].map((c) => c.dataset.layer);
       const bo = [...body.querySelectorAll('.chip[data-grp="管理所"].on')].map((c) => c.dataset.v);
       const mg = [...body.querySelectorAll('.chip[data-grp="管理处"].on')].map((c) => c.dataset.v);
       const bt = [...body.querySelectorAll('.chip[data-grp="信息系统分类"].on')].map((c) => c.dataset.v);
@@ -794,17 +943,31 @@ function popupHtml(r) {
       const mid = [...body.querySelectorAll('.chip[data-grp="中类"].on')].map((c) => c.dataset.v);
       const ssub = [...body.querySelectorAll('.chip[data-grp="子类"].on')].map((c) => c.dataset.v);
       const tr = [...body.querySelectorAll('.chip[data-grp="信息传输方式"].on')].map((c) => c.dataset.v);
+      // v2.5.0 建筑物层条件
+      const boB = [...body.querySelectorAll('.chip[data-grp="建筑物管理所"].on')].map((c) => c.dataset.v);
+      const mgB = [...body.querySelectorAll('.chip[data-grp="建筑物管理处"].on')].map((c) => c.dataset.v);
+      const btB = [...body.querySelectorAll('.chip[data-grp="建筑物类型"].on')].map((c) => c.dataset.v);
+      const kdB = [...body.querySelectorAll('.chip[data-grp="对象子类"].on')].map((c) => c.dataset.v);
       const q = (el("search") ? el("search").value : "").trim().toLowerCase();
-      let b = 0, p = 0; // b=命中监控点数，p=命中照片张数
-      for (const r of records) {
-        if (bo.length && !bo.includes(normOffice(orgVal(r, "office")))) continue;
-        if (mg.length && !mg.includes(orgVal(r, "mgmt"))) continue;
-        if (bt.length && !bt.includes(r.btype)) continue;
-        if (sub.length && !sub.includes(r.subsys)) continue;
-        if (mid.length && !mid.includes(r.midcat)) continue;
-        if (ssub.length && !ssub.includes(r.subcat)) continue;
-        if (tr.length && !tr.includes(r.trans)) continue;
-        if (q && !`${r.name} ${r.office} ${normOffice(r.office)} ${r.station} ${r.btype} ${r.subsys || ""} ${r.midcat || ""} ${r.subcat || ""} ${r.trans || ""}`.toLowerCase().includes(q)) continue;
+      let b = 0, p = 0; // b=命中对象数，p=命中照片张数
+      for (const r of records.concat(recordsBld)) {
+        const isB = isBld(r);
+        if (lay.length && !lay.includes(isB ? LAYER_BLD : LAYER_DEV)) continue;
+        if (isB) {
+          if (mgB.length && !mgB.includes(orgVal(r, "mgmt"))) continue;
+          if (boB.length && !boB.includes(normOffice(orgVal(r, "office")))) continue;
+          if (btB.length && !btB.includes(r.btype)) continue;
+          if (kdB.length && !kdB.includes(r.kind || "building")) continue;
+        } else {
+          if (bo.length && !bo.includes(normOffice(orgVal(r, "office")))) continue;
+          if (mg.length && !mg.includes(orgVal(r, "mgmt"))) continue;
+          if (bt.length && !bt.includes(r.btype)) continue;
+          if (sub.length && !sub.includes(r.subsys)) continue;
+          if (mid.length && !mid.includes(r.midcat)) continue;
+          if (ssub.length && !ssub.includes(r.subcat)) continue;
+          if (tr.length && !tr.includes(r.trans)) continue;
+        }
+        if (q && !matchKeyword(r, q)) continue;
         if (filter.photo && filter.photo.mode !== "all") {
           const cnt = (r.photos || []).length;
           if (filter.photo.mode === "has" && cnt <= 0) continue;
@@ -818,6 +981,14 @@ function popupHtml(r) {
     // 防抖（item 3 根因修复：照片 chip/至少 N 张 oninput 高频触发全库循环，4000+ 记录时会卡顿/死机；200ms 防抖让出主线程）
     let _hitT = null;
     const refreshHit = () => { if (_hitT) clearTimeout(_hitT); _hitT = setTimeout(() => { const h = el("fHit"); if (!h) return; const c = liveCount(); h.querySelector("#fHitB").textContent = c.b; h.querySelector("#fHitP").textContent = c.p; }, 200); };
+    // v2.5.0 对象类别 chips：切换即显示/隐藏建筑物专属条件区，并实时刷新命中数
+    body.querySelectorAll(".chip[data-layer]").forEach((c) => c.onclick = () => {
+      c.classList.toggle("on");
+      const sel = [...body.querySelectorAll(".chip[data-layer].on")].map((x) => x.dataset.layer);
+      const lc = el("layCnt"); if (lc) lc.textContent = sel.length;
+      const bb = el("fgBldBox"); if (bb) bb.style.display = sel.includes(LAYER_BLD) ? "" : "none";
+      refreshHit();
+    });
     // 多选组：仅绑定含 data-grp 的 chip，照片 chip 无 data-grp 走下方单选
     body.querySelectorAll('.chip[data-grp]').forEach((c) => c.onclick = () => {
       c.classList.toggle("on");
@@ -855,6 +1026,10 @@ function popupHtml(r) {
     refreshHit();
     el("fExit").onclick = closeModal;
     el("fApply").onclick = () => {
+      const lay = [...body.querySelectorAll(".chip[data-layer].on")].map((c) => c.dataset.layer);
+      // 对象类别一个都不勾 → 地图会全空，属误操作，直接拦住并提示（不静默变空图）
+      if (!lay.length) return toast("请至少选择一类对象（感知设备 / 水工建筑物）");
+      filter.layers = lay;
       filter.btype = [...body.querySelectorAll('.chip[data-grp="信息系统分类"].on')].map((c) => c.dataset.v);
       filter.office = [...body.querySelectorAll('.chip[data-grp="管理所"].on')].map((c) => c.dataset.v);
       filter.mgmt = [...body.querySelectorAll('.chip[data-grp="管理处"].on')].map((c) => c.dataset.v);
@@ -862,6 +1037,10 @@ function popupHtml(r) {
       filter.midcat = [...body.querySelectorAll('.chip[data-grp="中类"].on')].map((c) => c.dataset.v);
       filter.subcat = [...body.querySelectorAll('.chip[data-grp="子类"].on')].map((c) => c.dataset.v);
       filter.trans = [...body.querySelectorAll('.chip[data-grp="信息传输方式"].on')].map((c) => c.dataset.v);
+      filter.mgmtBld = [...body.querySelectorAll('.chip[data-grp="建筑物管理处"].on')].map((c) => c.dataset.v);
+      filter.officeBld = [...body.querySelectorAll('.chip[data-grp="建筑物管理所"].on')].map((c) => c.dataset.v);
+      filter.btypeBld = [...body.querySelectorAll('.chip[data-grp="建筑物类型"].on')].map((c) => c.dataset.v);
+      filter.kindBld = [...body.querySelectorAll('.chip[data-grp="对象子类"].on')].map((c) => c.dataset.v);
       const pm = body.querySelector("#phFiltChips .chip.on");
       filter.photo.mode = pm ? pm.dataset.pm : "all";
       const mn = el("phFiltMin");
@@ -869,7 +1048,7 @@ function popupHtml(r) {
       if (filter.q && filter.q.trim()) pushKwHist(filter.q);
       closeModal(); render(); saveUI();
       // 结果行为：0→提示无符合；1→跳到该点；多→绿色虚线圆圈圈出全部并刚好显示
-      const rs = records.filter(passFilter);
+      const rs = shownRecords().filter(passFilter);
       if (!rs.length) toast("没有符合条件的选项");
       else if (rs.length === 1) {
         const r = rs[0], lat = +r.lat, lon = +r.lon;
@@ -877,10 +1056,15 @@ function popupHtml(r) {
         toast("已定位唯一匹配：" + r.name);
       } else {
         drawFilterCircle(rs);
-        toast(`已筛选出 ${rs.length} 个监控点，已用绿色虚线圆圈圈出并居中显示`);
+        toast(`已筛选出 ${rs.length} 个对象，已用绿色虚线圆圈圈出并居中显示`);
       }
     };
-    el("fReset").onclick = () => { filter.office = []; filter.mgmt = []; filter.btype = []; filter.subsys = []; filter.midcat = []; filter.subcat = []; filter.trans = []; filter.photo = { mode: "all", min: 0 }; openFilter(); };
+    el("fReset").onclick = () => {
+      filter.office = []; filter.mgmt = []; filter.btype = []; filter.subsys = []; filter.midcat = []; filter.subcat = []; filter.trans = []; filter.photo = { mode: "all", min: 0 };
+      filter.mgmtBld = []; filter.officeBld = []; filter.btypeBld = []; filter.kindBld = [];
+      filter.layers = [LAYER_DEV];   // 重置回「感知设备」默认口径
+      openFilter();
+    };
     el("mOrgMgr").onclick = () => openOrgManager();
     el("mBtypeMgr").onclick = () => openClassifyManager();
     el("fOfficeMaint").onclick = () => openOrgManager("office"); // 兼容旧按钮 → 跳到机构层级并聚焦"所"
@@ -1098,12 +1282,60 @@ function popupHtml(r) {
     el("btSync").onclick = () => { saveCFG(); merge(); applyDims(); render(); toast("已全量同步：5 个分类维度已同步至筛选/表单/导出"); };
   }
 
-  // ---------- 添加 / 编辑 表单（v2.4：局/管理处/所/站/段 + 5 分类维度）----------
-  function formHtml(r) {
+  // ---------- 添加 / 编辑 表单（v2.4：局/管理处/所/站/段 + 5 分类维度；v2.5.0：按对象类别分流）----------
+  // formLayer / formKind：当前表单所属数据层与子类（building=水工建筑物 / place=命名地点）
+  let formLayer = LAYER_DEV, formKind = "building";
+  function formHtml(r, opt) {
     r = r || {};
-    formPhotos = (r.photos || []).map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "" }));
+    opt = opt || {};
+    formLayer = opt.layer || (isBld(r) ? LAYER_BLD : LAYER_DEV);
+    formKind = opt.kind || r.kind || (formLayer === LAYER_BLD ? "building" : "");
+    formPhotos = (r.photos || []).map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || p.thumb || "" }));
     const sel = (id, arr, val) => `<select id="${id}">${[""].concat(arr).map((v) => `<option ${v === val ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`;
+    const selKV = (id, pairs, val) => `<select id="${id}">${pairs.map((p) => `<option value="${p[0]}" ${p[0] === val ? "selected" : ""}>${esc(p[1])}</option>`).join("")}</select>`;
     const dv = (k) => orgDefault(k);
+    const coordBlock = `<div class="row2">
+        <div class="field"><label>经度</label><input id="fLon" value="${r.lon != null ? r.lon : ""}" inputmode="decimal"></div>
+        <div class="field"><label>纬度</label><input id="fLat" value="${r.lat != null ? r.lat : ""}" inputmode="decimal"></div>
+      </div>
+      <button class="btn ghost" id="fPick" style="margin-bottom:12px">📍 在地图上点选坐标</button>`;
+    const photoBlock = `<div class="field"><label>照片（可多张：正面 / 背面 / 侧面…）</label>
+        <div class="photo-grid" id="fPhotos"></div>
+        <div class="photo-add" id="fAddPhoto">＋ 添加照片</div>
+        <input type="file" id="fFile" accept="image/*" multiple style="display:none">
+      </div>`;
+    // ---------- 命名地点（Q4：只放常用的、有名的、坐标无歧义的位置；最简字段）----------
+    if (formLayer === LAYER_BLD && formKind === "place") {
+      const note = r.params && r.params["备注"] ? r.params["备注"] : "";
+      return `<div class="hint">📍 命名地点：只放常用的、有名的、坐标无歧义的位置（如天安门、颐和园）。仅需「名称 + 坐标」，可选照片与备注；<b>不带工程参数、不参与建筑物类型统计</b>。</div>
+      <div class="field"><label>地点名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
+      ${coordBlock}
+      <button class="btn ghost" id="fPlaceSearch" style="margin-bottom:12px">🔍 按地名搜坐标（需联网）</button>
+      <div class="field"><label>备注</label><textarea id="fParams" rows="2">${esc(note)}</textarea></div>
+      ${photoBlock}
+      <div style="display:none">${sel("fBureau", DIMS.bureaus, r.bureau || dv("bureau"))}${sel("fMgmt", DIMS.mgmtsBld, r.mgmt || dv("mgmt"))}${sel("fOffice", DIMS.officesBld, r.office)}${sel("fStation", DIMS.stationsBld || [], r.station)}${sel("fBtype", DIMS.btypesBld, "地点")}</div>`;
+    }
+    // ---------- 水工建筑物（水利口径：管理处 → 管理所 → 段 → 建筑物类型）----------
+    if (formLayer === LAYER_BLD) {
+      return `<div class="hint">🏗️ 水工建筑物（属于「水工建筑物」独立数据层，与感知设备数据互不影响）。字段口径与水利一张图一致：管理处 / 管理所 / 段。</div>
+      <div class="row2">
+        <div class="field"><label>名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
+        <div class="field"><label>建筑物类型</label>${sel("fBtype", DIMS.btypesBld, r.btype)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>管理处</label>${sel("fMgmt", DIMS.mgmtsBld, r.mgmt || dv("mgmt"))}</div>
+        <div class="field"><label>管理所</label>${sel("fOffice", DIMS.officesBld, r.office)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>段 / 站</label>${sel("fStation", DIMS.stationsBld || [], r.station)}</div>
+        <div class="field"><label>对象子类</label>${selKV("fKind", [["building", "建筑物"], ["place", "命名地点"]], r.kind || "building")}</div>
+      </div>
+      ${coordBlock}
+      <div class="field"><label>工程参数（每行 字段: 值）</label><textarea id="fParams">${esc((r.params ? Object.entries(r.params).map(([k, v]) => `${k} : ${v}`).join("\n") : ""))}</textarea></div>
+      ${photoBlock}
+      <div style="display:none">${sel("fBureau", DIMS.bureaus, r.bureau || dv("bureau"))}${sel("fSection", DIMS.sectionsBld || [], r.section)}</div>`;
+    }
+    // ---------- 感知设备（原有表单，一字未改）----------
     return `<div class="row2">
         <div class="field"><label>名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
         <div class="field"><label>信息系统分类（原摄像机类型）</label>${sel("fBtype", DIMS.btypes, r.btype || dv("btype") || r.btype)}</div>
@@ -1125,17 +1357,9 @@ function popupHtml(r) {
         <div class="field"><label>子类</label>${sel("fSubcat", DIMS.subcat, r.subcat)}</div>
       </div>
       <div class="field"><label>信息传输方式</label>${sel("fTrans", DIMS.trans, r.trans)}</div>
-      <div class="row2">
-        <div class="field"><label>经度</label><input id="fLon" value="${r.lon != null ? r.lon : ""}" inputmode="decimal"></div>
-        <div class="field"><label>纬度</label><input id="fLat" value="${r.lat != null ? r.lat : ""}" inputmode="decimal"></div>
-      </div>
-      <button class="btn ghost" id="fPick" style="margin-bottom:12px">📍 在地图上点选坐标</button>
+      ${coordBlock}
       <div class="field"><label>工程参数（每行 字段: 值）</label><textarea id="fParams">${esc((r.params ? Object.entries(r.params).map(([k, v]) => `${k} : ${v}`).join("\n") : ""))}</textarea></div>
-      <div class="field"><label>照片（可多张：正面 / 背面 / 侧面…）</label>
-        <div class="photo-grid" id="fPhotos"></div>
-        <div class="photo-add" id="fAddPhoto">＋ 添加照片</div>
-        <input type="file" id="fFile" accept="image/*" multiple style="display:none">
-      </div>`;
+      ${photoBlock}`;
   }
   function renderPhotos() {
     const box = el("fPhotos"); if (!box) return;
@@ -1192,20 +1416,34 @@ function popupHtml(r) {
     if (el("fParams")) el("fParams").value = d.params || "";
     renderPhotos();
   }
-  function openAdd() {
+  // v2.5.0：新增入口按对象类别分流（感知设备 / 水工建筑物 / 命名地点）
+  function openAdd(layer, kind) {
+    layer = layer || LAYER_DEV;
     editId = null;
-    openModal("添加监控点", formHtml(null), `<button class="btn ghost" id="fCancel">取消</button><button class="btn primary" id="fSave">保存</button>`);
+    const title = layer === LAYER_BLD ? (kind === "place" ? "添加地点" : "添加水工建筑物") : "添加监控点";
+    openModal(title, formHtml(null, { layer: layer, kind: kind }), `<button class="btn ghost" id="fCancel">取消</button><button class="btn primary" id="fSave">保存</button>`);
     bindForm();
   }
   function openEdit(id) {
     editId = id;
-    const r = records.find((x) => x.id === id); if (!r) return;
+    const r = findRec(id); if (!r) return;
     openModal("编辑：" + r.name, formHtml(r), `<button class="btn ghost" id="fCancel">取消</button><button class="btn primary" id="fSave">保存</button>`);
     clearAddDraft(); // 编辑模式不恢复「添加」草稿
     bindForm();
   }
+  // 按地名搜坐标（联网，失败静默降级为地图点选）——Q4「地点」建议走搜索选点，避免手填坐标歧义
+  function geocodePlace(kw, done) {
+    const tk = (window.__CONFIG__ && window.__CONFIG__.TIANDITU_TOKEN) || "";
+    if (!tk) return done(null);
+    const url = `https://api.tianditu.gov.cn/geocoder?ds=${encodeURIComponent(JSON.stringify({ keyWord: kw }))}&tk=${tk}`;
+    fetch(url).then((r) => r.json()).then((j) => {
+      const loc = j && j.location && (j.location.lon != null ? j.location : (j.location.lat ? { lon: j.location.lon, lat: j.location.lat } : null));
+      const lon = loc ? parseFloat(loc.lon) : NaN, lat = loc ? parseFloat(loc.lat) : NaN;
+      done(isFinite(lon) && isFinite(lat) ? { lon: lon, lat: lat, addr: (j.location && j.location.address) || "" } : null);
+    }).catch(() => done(null));
+  }
   function bindForm() {
-    restoreAddDraft(); // 跨 WebView 重建恢复草稿
+    if (formLayer === LAYER_DEV) restoreAddDraft(); // 跨 WebView 重建恢复草稿（仅设备层沿用旧草稿机制）
     renderPhotos();
     el("fAddPhoto").onclick = () => { saveAddDraft(); el("fFile").click(); };
     el("fFile").onchange = (e) => {
@@ -1221,9 +1459,20 @@ function popupHtml(r) {
       e.target.value = "";
     };
     el("fPick").onclick = () => { togglePick(true); toast("请在地图上点击以确定坐标"); };
+    if (el("fPlaceSearch")) el("fPlaceSearch").onclick = () => {
+      const kw = prompt("输入地名（如：天安门、颐和园）", (el("fName") || {}).value || "");
+      if (!kw) return;
+      toast("正在按地名检索坐标…");
+      geocodePlace(kw, (p) => {
+        if (!p) return toast("地名检索未取到坐标（可能离线或该地名无结果），请改用「在地图上点选坐标」");
+        el("fLon").value = p.lon; el("fLat").value = p.lat;
+        if (el("fName") && !el("fName").value.trim()) el("fName").value = kw;
+        toast("已取到坐标：" + p.lon + ", " + p.lat + (p.addr ? "（" + p.addr + "）" : ""));
+      });
+    };
     el("fCancel").onclick = () => { clearAddDraft(); closeModal(); };
     el("fSave").onclick = saveForm;
-    ["fBureau", "fMgmt", "fOffice", "fSection", "fName", "fBtype", "fSubsys", "fMidcat", "fSubcat", "fTrans", "fStation", "fLon", "fLat", "fParams"].forEach((id) => { const e = el(id); if (e) e.onchange = e.oninput = saveAddDraft; });
+    ["fBureau", "fMgmt", "fOffice", "fSection", "fName", "fBtype", "fKind", "fSubsys", "fMidcat", "fSubcat", "fTrans", "fStation", "fLon", "fLat", "fParams"].forEach((id) => { const e = el(id); if (e) e.onchange = e.oninput = saveAddDraft; });
   }
   function togglePick(on) {
     pickMode = on;
@@ -1239,41 +1488,78 @@ function popupHtml(r) {
     const lon = parseFloat(el("fLon").value), lat = parseFloat(el("fLat").value);
     if (!name) return toast("请填写名称");
     if (isNaN(lon) || isNaN(lat)) return toast("请填写有效经纬度（可点选）");
+    const isPlace = formLayer === LAYER_BLD && formKind === "place";
+    const params = isPlace
+      ? (el("fParams").value.trim() ? { "备注": el("fParams").value.trim() } : {})
+      : parseParams(el("fParams").value);
+    const btype = isPlace ? "地点" : el("fBtype").value;
+    const cur = editId ? findRec(editId) : null;
     const rec = {
-      id: editId || IO.genId(), name, lon, lat, ts: Date.now(),
+      id: editId || (formLayer === LAYER_BLD ? bldIdOf(IO.genId()) : IO.genId()),
+      name, lon: lon, lat: lat, ts: Date.now(),
+      layer: formLayer,
+      kind: formLayer === LAYER_BLD ? (isPlace ? "place" : "building") : undefined,
       bureau: el("fBureau") ? el("fBureau").value : "",
       mgmt: el("fMgmt") ? el("fMgmt").value : "",
-      office: el("fOffice").value, station: el("fStation").value, section: el("fSection") ? el("fSection").value : "",
-      btype: el("fBtype").value, subsys: el("fSubsys") ? el("fSubsys").value : "", midcat: el("fMidcat") ? el("fMidcat").value : "", subcat: el("fSubcat") ? el("fSubcat").value : "", trans: el("fTrans") ? el("fTrans").value : "",
-      type: (el("fStation").value && el("fBtype").value) ? el("fStation").value + "--" + el("fBtype").value : el("fBtype").value,
-      params: parseParams(el("fParams").value), photos: formPhotos.map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "", full: p.dataUrl || "", thumb: p.dataUrl || "", hash: "" })),
-      base: editId ? (records.find((x) => x.id === editId) || {}).base : false, custom: true,
-      description: Object.entries(parseParams(el("fParams").value)).map(([k, v]) => `${k} : ${v}`).join("\n")
+      office: el("fOffice") ? el("fOffice").value : "", station: el("fStation") ? el("fStation").value : "", section: el("fSection") ? el("fSection").value : "",
+      btype: btype, subsys: el("fSubsys") ? el("fSubsys").value : "", midcat: el("fMidcat") ? el("fMidcat").value : "", subcat: el("fSubcat") ? el("fSubcat").value : "", trans: el("fTrans") ? el("fTrans").value : "",
+      type: (el("fStation") && el("fStation").value && btype) ? el("fStation").value + "--" + btype : btype,
+      params: params, photos: formPhotos.map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "", full: p.dataUrl || "", thumb: p.dataUrl || "", hash: "" })),
+      base: cur ? cur.base : false, custom: true,
+      description: Object.entries(params).map(([k, v]) => `${k} : ${v}`).join("\n")
     };
-    await Store.patch((d) => {
-      if (editId) {
-        // 若是新增记录（在 added 中），更新它；否则记入 updated
-        const i = (d.added || []).findIndex((a) => a.id === editId);
-        if (i >= 0) d.added[i] = rec; else d.updated[editId] = rec;
-      } else {
-        d.added.push(rec);
-      }
-    });
-    DELTA = await Store.get(); merge(); render();
-    clearAddDraft(); closeModal(); toast(editId ? "已更新" : "已添加");
-    kbLog(editId ? "更新监控点" : "新增监控点", { name });
+    if (formLayer === LAYER_BLD) {
+      rec.src = "user";
+      await Store.bld.patch((d) => {
+        if (editId) {
+          const i = (d.added || []).findIndex((a) => a.id === editId);
+          if (i >= 0) d.added[i] = rec; else d.updated[editId] = rec;
+        } else {
+          d.added.push(rec);
+        }
+      });
+      DELTA_BLD = await Store.bld.get();
+    } else {
+      await Store.patch((d) => {
+        if (editId) {
+          // 若是新增记录（在 added 中），更新它；否则记入 updated
+          const i = (d.added || []).findIndex((a) => a.id === editId);
+          if (i >= 0) d.added[i] = rec; else d.updated[editId] = rec;
+        } else {
+          d.added.push(rec);
+        }
+      });
+      DELTA = await Store.get();
+    }
+    merge(); render();
+    clearAddDraft(); closeModal();
+    const what = formLayer === LAYER_BLD ? (isPlace ? "地点" : "水工建筑物") : "监控点";
+    toast((editId ? "已更新" : "已添加") + what);
+    kbLog((editId ? "更新" : "新增") + what, { name });
   }
 
   async function del(id) {
-    if (!confirm("确认删除该监控点？")) return;
-    await Store.patch((d) => {
-      const i = (d.added || []).findIndex((a) => a.id === id);
-      if (i >= 0) d.added.splice(i, 1);
-      else { d.deleted = d.deleted || []; d.deleted.push(id); delete d.updated[id]; }
-    });
-    DELTA = await Store.get(); merge(); render();
+    const rec = findRec(id);
+    const bld = isBld(rec || { layer: (String(id).indexOf(BLD_PREFIX) === 0 ? LAYER_BLD : LAYER_DEV) });
+    if (!confirm("确认删除该" + (bld ? "水工建筑物" : "监控点") + "？")) return;
+    if (bld) {
+      await Store.bld.patch((d) => {
+        const i = (d.added || []).findIndex((a) => a.id === id);
+        if (i >= 0) d.added.splice(i, 1);
+        else { d.deleted = d.deleted || []; d.deleted.push(id); delete d.updated[id]; }
+      });
+      DELTA_BLD = await Store.bld.get();
+    } else {
+      await Store.patch((d) => {
+        const i = (d.added || []).findIndex((a) => a.id === id);
+        if (i >= 0) d.added.splice(i, 1);
+        else { d.deleted = d.deleted || []; d.deleted.push(id); delete d.updated[id]; }
+      });
+      DELTA = await Store.get();
+    }
+    merge(); render();
     toast("已删除");
-    kbLog("删除监控点", { id });
+    kbLog("删除" + (bld ? "水工建筑物" : "监控点"), { id: id });
   }
 
   // ---------- 批量导入（原生文件夹/zip 逐文件回调 APP.receivePhoto / receiveSheet）----------
@@ -2225,7 +2511,79 @@ function popupHtml(r) {
   }
   // ---------- /v2.4.9 导入统一确认 ----------
 
-  async function doImport(file) {
+  /* ===================== v2.5.0 导入水工建筑物（需求三） =====================
+   * 硬约束（用户在需求原文里反复强调）：
+   *   「导入这些数据只影响建筑物数据，不能影响或覆盖感知设备数据信息」
+   * 因此这里：① 只 patch Store.bld（独立 IndexedDB 键 delta_bld）；② id 统一加 bld: 前缀，
+   * 与设备 id 空间物理隔离；③ 全程不读不写 DELTA（设备增量）。设备线代码一行未动。
+   * 冲突处理按 Q5 答复：同 id 覆盖，并先弹窗把「新增 N 条 / 覆盖 M 条」讲清楚。
+   * ------------------------------------------------------------------------ */
+  const bldNameKey = (r) => String(r.name || "").trim() + "|" + (+r.lon).toFixed(6) + "," + (+r.lat).toFixed(6);
+  function sameBldByName(r) {
+    const k = bldNameKey(r);
+    const all = BASE_BLD.concat(DELTA_BLD.added || []);
+    for (let i = 0; i < all.length; i++) if (bldNameKey(all[i]) === k) return all[i];
+    return null;
+  }
+  function mergeBldKeep(oldRec, newRec, keep) {
+    if (!keep) return newRec;
+    const old = oldRec || {};
+    const out = Object.assign({}, newRec);
+    if (!(out.photos && out.photos.length) && old.photos && old.photos.length) out.photos = old.photos;
+    if (!(out.params && Object.keys(out.params).length) && old.params && Object.keys(old.params).length) out.params = old.params;
+    if (!out.description && old.description) out.description = old.description;
+    if (!out.ts && old.ts) out.ts = old.ts;
+    return out;
+  }
+  async function commitBuildings(recs, sourceName) {
+    const add = [], upd = [];
+    for (const raw of recs) {
+      const r = Object.assign({}, raw);
+      r.id = bldIdOf(r.id);
+      r.layer = LAYER_BLD;
+      r.kind = (r.kind === "place" || r.btype === "地点") ? "place" : "building";
+      if (!r.src) r.src = "import";
+      const exist = BASE_BLD.find((b) => b.id === r.id)
+        || (DELTA_BLD.added || []).find((a) => a.id === r.id)
+        || sameBldByName(r);
+      if (exist) { r.id = exist.id; upd.push(r); } else add.push(r);
+    }
+    const names = upd.slice(0, 12).map((r) => r.name || rawIdOf(r.id)).join("、");
+    const answer = await new Promise((resolve) => {
+      openModal("导入水工建筑物 · 导入确认",
+        `<div class="hint">本次解析到 <b>${recs.length}</b> 条水工建筑物，将写入<b>水工建筑物数据层</b>（独立数据文件 + 独立本地存储键）。</div>
+         <div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;line-height:1.9">
+           ✅ 新增 <b style="color:var(--accent)">${add.length}</b> 条　·　♻️ 覆盖已有 <b style="color:#ffb454">${upd.length}</b> 条${upd.length ? "（" + esc(names) + (upd.length > 12 ? " 等" : "") + "）" : ""}
+         </div>
+         <div class="hint" style="color:#8fd6a8">🔒 感知设备数据完全不受影响：两层使用彼此独立的本地存储键，导入只写建筑物层。</div>
+         <div class="field" style="margin-top:6px"><label><input type="checkbox" id="bldKeepN" checked> 覆盖时保留原有的照片、备注与自定义参数</label></div>`,
+        `<button class="btn ghost" id="bldImpCancel">取消</button><button class="btn primary" id="bldImpGo">确认导入</button>`);
+      el("bldImpCancel").onclick = () => { closeModal(); resolve(null); };
+      el("bldImpGo").onclick = () => { const keep = !!(el("bldKeepN") && el("bldKeepN").checked); closeModal(); resolve({ keep: keep }); };
+    });
+    if (!answer) return toast("已取消导入（建筑物层未做任何改动）");
+    const keep = answer.keep;
+    await Store.bld.patch((d) => {
+      d.added = d.added || []; d.updated = d.updated || {}; d.deleted = d.deleted || [];
+      for (const r of add.concat(upd)) {
+        const i = d.added.findIndex((a) => a.id === r.id);
+        if (i >= 0) { d.added[i] = mergeBldKeep(d.added[i], r, keep); continue; }
+        const base = BASE_BLD.find((b) => b.id === r.id);
+        if (base) d.updated[r.id] = mergeBldKeep(Object.assign({}, base, d.updated[r.id] || {}), r, keep);
+        else d.added.push(r);
+      }
+      // 覆盖导入不应把「已删除」的记录又拉回来
+      if (upd.length) d.deleted = d.deleted.filter((x) => !upd.some((r) => r.id === x));
+    });
+    DELTA_BLD = await Store.bld.get();
+    merge(); render();
+    toast(`导入完成：新增 ${add.length} 条、覆盖 ${upd.length} 条水工建筑物（感知设备数据未受影响）`);
+    kbLog("导入水工建筑物", { file: sourceName, add: add.length, upd: upd.length });
+  }
+
+  async function doImport(file, layer) {
+    const target = layer || LAYER_DEV;
+    const isBldImport = target === LAYER_BLD;
     const ext = file.name.toLowerCase().split(".").pop();
     if (!["kml", "csv", "kmz", "ovkmz", "xls", "xlsx", "ovobj", "obj"].includes(ext)) return toast("不支持的格式：" + ext);
     // 大文件流量提醒（items 1/2：kmz/ovkmz 可能含大量照片 >3GB）
@@ -2264,9 +2622,15 @@ function popupHtml(r) {
         bufBytes = new Uint8Array(ab);
         recs = await IO.importKmzBuffer(bufBytes.buffer);
       }
-      if (!recs.length) { hideBusy(); throw new Error("未解析到任何监控点"); }
+      if (!recs.length) { hideBusy(); throw new Error(isBldImport ? "未解析到任何水工建筑物" : "未解析到任何监控点"); }
 
       recs = await unifyOfficesOnImport(recs);
+      // 水工建筑物：走独立提交通道（只写建筑物层、同 id 覆盖并提示）；设备层流程保持原样
+      if (isBldImport) {
+        hideBusy();
+        await commitBuildings(recs, file.name);
+        return;
+      }
       // 内容去重（item 6）：整文件哈希，若与此前导入的相同则提示覆盖/跳过
       if (bufBytes) {
         const h = await IO.sha256Hex(bufBytes);
@@ -2299,10 +2663,13 @@ function popupHtml(r) {
     } catch (e) { hideBusy(); toast("导入失败：" + e.message); }
   }
   function exportMenu() {
-    const hasFilter = filter.office.length || filter.btype.length || filter.q;
-    const scope = hasFilter ? records.filter(passFilter) : records;
-    const scopeLabel = hasFilter ? `筛选结果（${scope.length} 个）` : `全部监控点（${scope.length} 个）`;
-    const html = `<div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;color:var(--txt);line-height:1.7">当前导出范围：<b style="color:var(--accent);font-size:14px">${scopeLabel}</b>${hasFilter ? "（已按当前筛选条件预选，可在下方增删）" : "（未筛选则导出全部；可先「筛选」再导出以只导筛选集）"}</div>
+    const hasFilter = filterActive();
+    const shown = shownRecords();
+    const scope = hasFilter ? shown.filter(passFilter) : shown;
+    const scopeLabel = hasFilter ? `筛选结果（${scope.length} 个）` : `当前对象类别全部（${scope.length} 个）`;
+    const layerHint = `当前对象类别：<b>${filter.layers.map((k) => (LAYERS.find((L) => L.key === k) || {}).label || k).join(" + ") || "（未选）"}</b>（含感知设备 ${filter.layers.includes(LAYER_DEV) ? records.length : 0} 个、水工建筑物 ${filter.layers.includes(LAYER_BLD) ? recordsBld.length : 0} 个）`
+      + (filter.layers.length > 1 ? `<br><span style="color:#ffb454">提示：当前同时勾选了感知设备与水工建筑物，两者「机构 / 管理所」口径不同（设备=管理处，建筑物=管理所），建议分层导出，避免同一列混两种含义。</span>` : "");
+    const html = `<div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;color:var(--txt);line-height:1.7">当前导出范围：<b style="color:var(--accent);font-size:14px">${scopeLabel}</b>${hasFilter ? "（已按当前筛选条件预选，可在下方增删）" : "（未筛选则导出当前对象类别全部；可先「筛选」再导出以只导筛选集）"}<br><span style="font-size:12px">${layerHint}</span></div>
       <div class="field" style="margin-top:12px"><label>导出范围（勾选指定监控点）</label>
         <div class="ex-selbar"><button class="btn ghost sm" id="exAll">全选</button><button class="btn ghost sm" id="exNone">全不选</button><span class="hint" id="exCnt">已选 ${scope.length}/${scope.length}</span></div>
         <div class="ex-list" id="exList">${scope.map((r) => `<label class="ex-item"><input type="checkbox" class="ex-cb" value="${r.id}" checked><span>${esc(r.name)}</span></label>`).join("")}</div>
@@ -2377,7 +2744,7 @@ function popupHtml(r) {
     el("exGo").onclick = async () => {
       const fmt = el("exFmt").value, where = el("exWhere").value;
       const ids = [...list.querySelectorAll(".ex-cb:checked")].map((c) => c.value);
-      let sel = records.filter((r) => ids.includes(r.id));
+      let sel = shownRecords().filter((r) => ids.includes(r.id));
       // v2.4：机构选项按所选监控点自动匹配——若 ofc-cb 处于全选（用户未主动收缩），用 sel 的机构子集覆盖
       const ofcBox = el("exOffices");
       let offices = null;
@@ -2443,14 +2810,22 @@ function popupHtml(r) {
   function stats() {
     const byOffice = {}, byBtype = {};
     records.forEach((r) => { byOffice[r.office] = (byOffice[r.office] || 0) + 1; byBtype[r.btype] = (byBtype[r.btype] || 0) + 1; });
+    const byOfficeB = {}, byBtypeB = {};
+    recordsBld.forEach((r) => { const o = normOffice(orgVal(r, "office")) || "(未填)"; byOfficeB[o] = (byOfficeB[o] || 0) + 1; byBtypeB[r.btype] = (byBtypeB[r.btype] || 0) + 1; });
     const grid = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="stat"><div class="n">${v}</div><div class="t">${esc(k) || "未分类"}</div></div>`).join("");
     const custom = (DELTA.added || []).length + Object.keys(DELTA.updated || {}).length;
+    const customB = (DELTA_BLD.added || []).length + Object.keys(DELTA_BLD.updated || {}).length;
     const html = `<div class="stat-grid">
-        <div class="stat"><div class="n">${records.length}</div><div class="t">监控点总数</div></div>
-        <div class="stat"><div class="n">${custom}</div><div class="t">我的改动</div></div>
+        <div class="stat"><div class="n">${records.length}</div><div class="t">📡 感知设备总数</div></div>
+        <div class="stat"><div class="n">${recordsBld.length}</div><div class="t">🏗️ 水工建筑物总数</div></div>
+        <div class="stat"><div class="n">${custom}</div><div class="t">设备·我的改动</div></div>
+        <div class="stat"><div class="n">${customB}</div><div class="t">建筑物·我的改动</div></div>
       </div>
-      <h4 style="margin:14px 0 6px">按机构</h4><div class="stat-grid">${grid(byOffice)}</div>
-      <h4 style="margin:14px 0 6px">按摄像机类型</h4><div class="stat-grid">${grid(byBtype)}</div>`;
+      <div class="hint" style="margin-top:8px">两层数据彼此独立：设备层来自 data.js，建筑物层来自独立文件 data_buildings.js；本地改动分别存于独立存储键（delta / delta_bld），互不影响。</div>
+      <h4 style="margin:14px 0 6px">感知设备 · 按机构</h4><div class="stat-grid">${grid(byOffice)}</div>
+      <h4 style="margin:14px 0 6px">感知设备 · 按摄像机类型</h4><div class="stat-grid">${grid(byBtype)}</div>
+      <h4 style="margin:14px 0 6px">水工建筑物 · 按管理所</h4><div class="stat-grid">${grid(byOfficeB)}</div>
+      <h4 style="margin:14px 0 6px">水工建筑物 · 按建筑物类型</h4><div class="stat-grid">${grid(byBtypeB)}</div>`;
     openModal("统计概览", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
   }
   function locate() {
@@ -2476,7 +2851,7 @@ function popupHtml(r) {
   }
   // ---------- 导航 / 周边 / 测距 ----------
   function navigate(id) {
-    const r = records.find((x) => x.id === id); if (!r) return;
+    const r = findRec(id); if (!r) return;
     const name = r.name || "目标";
     let url;
     if (myLoc) {
@@ -2486,48 +2861,67 @@ function popupHtml(r) {
     }
     if (window.AndroidBridge && window.AndroidBridge.openNav) window.AndroidBridge.openNav(url);
     else window.open(url, "_blank");
-    toast(myLoc ? "已用我的位置发起导航" : "已打开目标位置");
+    toast("已导航至" + layerLabel(r) + "：「" + name + "」" + (myLoc ? "（起点：我的位置）" : ""));
   }
   function nearCenter(id) {
-    const r = records.find((x) => x.id === id); if (!r) return;
+    const r = findRec(id); if (!r) return;
     nearbyCenter = { lat: r.lat, lon: r.lon };
     openNearby();
+  }
+  // 对象类别选择器（可复用的 chips 片段）
+  function layerChips(id, sel) {
+    return `<div class="chips" id="${id}">` + LAYERS.map((L) => `<span class="chip ${sel.includes(L.key) ? "on" : ""}" data-lk="${L.key}">${L.icon} ${L.label}${L.key === LAYER_DEV ? "（默认）" : ""}</span>`).join("") + `</div>`;
+  }
+  function readLayerChips(id, fallback) {
+    const box = el(id); if (!box) return fallback;
+    const v = [...box.querySelectorAll(".chip.on")].map((c) => c.dataset.lk);
+    return v.length ? v : fallback;
   }
   function openNearby() {
     const centerOpts = `<option value="map">当前地图中心</option>` +
       (myLoc ? `<option value="me">我的位置</option>` : ``) +
       `<option value="pick">在地图上点选</option>` +
-      records.slice(0, 200).map((r) => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("");
+      records.slice(0, 200).map((r) => `<option value="${esc(r.id)}">📡 ${esc(r.name)}</option>`).join("") +
+      recordsBld.slice(0, 200).map((r) => `<option value="${esc(r.id)}">🏗️ ${esc(r.name)}</option>`).join("");
     const html = `<div class="field"><label>中心</label><select id="nbCenter">${centerOpts}</select></div>
-      <div class="field"><label>半径（米）</label>
-        <select id="nbRadius"><option value="200">200</option><option value="500" selected>500</option><option value="1000">1000</option><option value="3000">3000</option><option value="5000">5000</option><option value="10000">10000</option></select></div>
-      <div class="field"><label>周边监控点类型（可多选，不选=全部）</label><div class="chips" id="nbBtypes">${DIMS.btypes.map((t) => `<span class="chip" data-bt="${esc(t)}">${esc(t)}</span>`).join("")}</div></div>
-      <div class="hint">将显示与「中心」距离不超过半径、且符合所选类型的全部监控点，并在地图上画范围圈。</div>`;
+      <div class="field"><label>对象类别（勾选后生效，感知设备为默认）</label>${layerChips("nbLayers", filter.layers)}</div>
+      <div class="field"><label>半径（km，可直接输入）</label>
+        <input id="nbRadiusKm" class="inp" inputmode="decimal" value="${spatialRadiusKm}" style="max-width:140px">
+        <div class="chips" id="nbQuick">${[0.2, 0.5, 1, 3, 5].map((v) => `<span class="chip ${Math.abs(v - spatialRadiusKm) < 1e-6 ? "on" : ""}" data-km="${v}">${v} km</span>`).join("")}</div></div>
+      <div class="field"><label>周边感知设备类型（可多选，不选=全部）</label><div class="chips" id="nbBtypes">${DIMS.btypes.map((t) => `<span class="chip" data-bt="${esc(t)}">${esc(t)}</span>`).join("")}</div></div>
+      <div class="field"><label>周边水工建筑物类型（可多选，不选=全部）</label><div class="chips" id="nbBtypesBld">${DIMS.btypesBld.map((t) => `<span class="chip" data-btb="${esc(t)}">${esc(t)}</span>`).join("")}</div></div>
+      <div class="hint">将显示与「中心」距离不超过半径、且符合所选类型与对象类别的全部对象，并在地图上画范围圈。</div>`;
     openModal("周边搜索", html, `<button class="btn ghost" id="nbExit">退出</button><button class="btn ghost" id="nbClear">清除周边</button><button class="btn primary" id="nbGo">搜索</button>`);
     el("nbExit").onclick = closeModal;
-    const nbBt = document.querySelectorAll("#nbBtypes .chip");
-    nbBt.forEach((c) => c.onclick = () => c.classList.toggle("on"));
+    document.querySelectorAll("#nbBtypes .chip, #nbBtypesBld .chip, #nbLayers .chip, #nbQuick .chip").forEach((c) => c.onclick = () => c.classList.toggle("on"));
+    el("nbQuick").querySelectorAll(".chip").forEach((c) => c.onclick = () => { el("nbRadiusKm").value = c.dataset.km; });
     el("nbGo").onclick = () => {
-      const cval = el("nbCenter").value, rad = parseInt(el("nbRadius").value, 10);
+      const cval = el("nbCenter").value;
+      const km = parseFloat(el("nbRadiusKm").value);
+      if (!isFinite(km) || km <= 0) return toast("请填写有效的半径（km）");
+      spatialRadiusKm = km;
+      const rad = Math.round(km * 1000);
       if (cval === "map") nearbyCenter = { lat: map.getCenter().lat, lon: map.getCenter().lng };
       else if (cval === "me") { if (!myLoc) return toast("尚未定位，请先「定位我的位置」"); nearbyCenter = myLoc; }
       else if (cval === "pick") { closeModal(); pickNearbyCenter(rad); return; }
-      else { const rr = records.find((x) => x.id === cval); if (!rr) return; nearbyCenter = { lat: rr.lat, lon: rr.lon }; }
+      else { const rr = findRec(cval); if (!rr) return; nearbyCenter = { lat: rr.lat, lon: rr.lon }; }
       nearbyRadius = rad;
+      filter.layers = readLayerChips("nbLayers", filter.layers);
       nearbyBtypes = [...document.querySelectorAll("#nbBtypes .chip.on")].map((c) => c.dataset.bt);
-      closeModal(); render(); fitToShown();
-      const btSuffix = nearbyBtypes.length ? `（类型：${nearbyBtypes.join("/")}）` : "";
-      toast(`周边 ${rad}m 内共 ${records.filter(passFilter).length} 个监控点${btSuffix}`);
+      nearbyBtypesBld = [...document.querySelectorAll("#nbBtypesBld .chip.on")].map((c) => c.dataset.btb);
+      closeModal(); render(); fitToShown(); saveUI();
+      const btSuffix = nearbyBtypes.length ? `（设备类型：${nearbyBtypes.join("/")}）` : "";
+      toast(`周边 ${km} km 内共 ${shownRecords().filter(passFilter).length} 个对象${btSuffix}`);
     };
     el("nbClear").onclick = () => {
-      nearbyCenter = null; nearbyRadius = null; nearbyBtypes = [];
+      nearbyCenter = null; nearbyRadius = null; nearbyBtypes = []; nearbyBtypesBld = [];
       if (nearbyCircle) { overlayGroup.removeLayer(nearbyCircle); nearbyCircle = null; }
       closeModal(); render(); toast("已清除周边筛选");
     };
   }
   function pickNearbyCenter(rad) {
     toast("请在地图上点选周边中心");
-    map.once("click", (e) => { nearbyCenter = { lat: e.latlng.lat, lon: e.latlng.lng }; nearbyRadius = rad; render(); fitToShown(); toast(`周边 ${rad}m 内共 ${records.filter(passFilter).length} 个监控点`); });
+    map.once("click", (e) => { nearbyCenter = { lat: e.latlng.lat, lon: e.latlng.lng }; nearbyRadius = rad; render(); fitToShown(); toast(`周边 ${(rad / 1000)} km 内共 ${shownRecords().filter(passFilter).length} 个对象`); });
   }
   function haversine(a, b) {
     const R = 6371000, toRad = (x) => x * Math.PI / 180;
@@ -2536,6 +2930,145 @@ function popupHtml(r) {
     return 2 * R * Math.asin(Math.sqrt(s));
   }
   function fmtDist(m) { return m >= 1000 ? (m / 1000).toFixed(2) + " km" : Math.round(m) + " m"; }
+
+  /* ===================== v2.5.0 空间关系问答（需求四-a） =====================
+   * 支持自然语言：「某建筑物周边有几个感知设备」/「某感知设备周边有几个水工建筑物」
+   * 半径口径（Q6 用户答复）：以 km 为单位、用户填入、默认 0.5km；内部换算成米交给 haversine。
+   * 计算完全在本地完成（离线可用），同时把结果注入 AI 上下文，保证大模型回答与本地一致。
+   * ======================================================================== */
+  const SPATIAL_DEFAULT_KM = 0.5;
+  function radiusMetersOf(km) { const v = parseFloat(km); return Math.round((isFinite(v) && v > 0 ? v : SPATIAL_DEFAULT_KM) * 1000); }
+  function layerText(k) { return k === LAYER_BLD ? "水工建筑物" : "感知设备"; }
+  // 以 centerRec 为圆心、radiusKm 为半径统计某一层对象（排除圆心自身）
+  function neighborsOf(centerRec, targetLayer, radiusKm) {
+    const R = radiusMetersOf(radiusKm);
+    const arr = targetLayer === LAYER_BLD ? recordsBld : records;
+    const c = { lat: +centerRec.lat, lon: +centerRec.lon };
+    const hits = [];
+    if (!isFinite(c.lat) || !isFinite(c.lon)) return { km: R / 1000, hits: hits };
+    for (const r of arr) {
+      if (r.id === centerRec.id) continue;
+      const lat = +r.lat, lon = +r.lon;
+      if (!isFinite(lat) || !isFinite(lon)) continue;
+      const d = haversine(c, { lat: lat, lon: lon });
+      if (d <= R + 1e-6) hits.push({ rec: r, dist: d });
+    }
+    hits.sort((a, b) => a.dist - b.dist);
+    return { km: R / 1000, hits: hits };
+  }
+  // 解析自然语言问句 → { center, target, km }，解析不出返回 null
+  function parseSpatialQuestion(q) {
+    const text = String(q || "").trim();
+    if (!text) return null;
+    if (!/周边|周围|附近|方圆|范围|半径/.test(text)) return null;
+    let km = spatialRadiusKm;
+    const m = text.match(/(\d+(?:\.\d+)?)\s*(km|公里|千米|米|m)\b/i) || text.match(/(\d+(?:\.\d+)?)\s*(km|公里|千米|米|m)/i);
+    if (m) {
+      let v = parseFloat(m[1]);
+      const u = String(m[2]).toLowerCase();
+      if (u === "米" || u === "m") v = v / 1000;
+      if (isFinite(v) && v > 0) km = v;
+    }
+    // 找问句里提到的对象（取名字最长的那个，避免短名误命中）
+    const all = recordsBld.concat(records);
+    let hit = null, best = 1;
+    for (const r of all) {
+      const n = String(r.name || "").trim();
+      if (n.length >= 2 && text.indexOf(n) >= 0 && n.length > best) { hit = r; best = n.length; }
+    }
+    if (!hit) return null;
+    let target = isBld(hit) ? LAYER_DEV : LAYER_BLD;
+    const wantsDev = /感知设备|摄像机|球机|枪机|监控点|摄像头|设备/.test(text);
+    const wantsBld = /水工建筑物|建筑物|闸门|闸|桥梁|桥|涵洞|渡槽|跌水|倒虹吸|泵站/.test(text);
+    if (wantsDev && !wantsBld) target = LAYER_DEV;
+    else if (wantsBld && !wantsDev) target = LAYER_BLD;
+    return { center: hit, target: target, km: km };
+  }
+  // 生成可读结论（供本地回答与 AI 上下文共用，口径必然一致）
+  function spatialReport(centerRec, targetLayer, radiusKm) {
+    const st = neighborsOf(centerRec, targetLayer, radiusKm);
+    const centerLayer = isBld(centerRec) ? LAYER_BLD : LAYER_DEV;
+    const same = neighborsOf(centerRec, centerLayer, radiusKm);
+    const km = st.km;
+    const head = `${layerText(centerLayer)}「${centerRec.name}」周边 ${km} km 内有 ${st.hits.length} 个${layerText(targetLayer)}`;
+    const list = st.hits.slice(0, 10).map((h) => `　· ${h.rec.name}（${fmtDist(h.dist)}）`).join("\n");
+    const extra = st.hits.length > 10 ? `\n　… 另有 ${st.hits.length - 10} 个未列出` : "";
+    const sameTxt = `\n（同层参考：周边 ${km} km 内还有 ${same.hits.length} 个${layerText(centerLayer)}）`;
+    return {
+      center: centerRec, target: targetLayer, km: km, hits: st.hits, sameCount: same.hits.length,
+      text: head + (st.hits.length ? "\n" + list + extra : "") + sameTxt,
+      oneLine: head
+    };
+  }
+  // 本地直答（返回文本或 ""）
+  function spatialAnswerText(q) {
+    const p = parseSpatialQuestion(q);
+    if (!p) return "";
+    return spatialReport(p.center, p.target, p.km).text;
+  }
+  // 把本地空间关系统计注入 AI 上下文（AI 与本地口径一致，不靠模型猜）
+  function spatialContextFor(q) {
+    const p = parseSpatialQuestion(q);
+    if (!p) return "";
+    return "【本地台账空间关系统计（权威，请严格据此回答）】\n" + spatialReport(p.center, p.target, p.km).text
+      + `\n说明：半径 ${p.km} km 由本条问题/当前设置确定，距离按 WGS84 球面大圆距离计算。`;
+  }
+  // 在地图上圈出「中心 + 命中对象」
+  function spatialFocus(centerRec, hits, km) {
+    nearbyCenter = { lat: +centerRec.lat, lon: +centerRec.lon };
+    nearbyRadius = radiusMetersOf(km);
+    nearbyBtypes = []; nearbyBtypesBld = [];
+    render();
+    map.flyTo([+centerRec.lat, +centerRec.lon], Math.max(map.getZoom(), 15), { duration: 0.6 });
+    layerGroup.eachLayer((m) => { if (m._rid === centerRec.id) m.openPopup(); });
+  }
+  // 结构化弹窗：自然语言输入 + 选对象 / 目标类别 / 半径
+  function openSpatialStat(presetId) {
+    const pre = presetId ? findRec(presetId) : null;
+    const opts = recordsBld.map((r) => `<option value="${esc(r.id)}"${pre && pre.id === r.id ? " selected" : ""}>🏗️ ${esc(r.name)}</option>`).join("")
+      + records.map((r) => `<option value="${esc(r.id)}"${pre && pre.id === r.id ? " selected" : ""}>📡 ${esc(r.name)}</option>`).join("");
+    const html = `<div class="hint">问「某对象周边有几个（感知设备 / 水工建筑物）」。半径以 <b>km</b> 为单位、可直接填写，默认 <b>${SPATIAL_DEFAULT_KM}</b> km；计算在本地完成，离线可用。</div>
+      <div class="field"><label>自然语言提问（点「直接回答」即本地计算，无需联网）</label>
+        <textarea id="spQ" class="inp" rows="2" placeholder="例如：龚庄子进水闸周边有几个感知设备（1km）"></textarea></div>
+      <button class="btn primary block" id="spAsk" style="margin-bottom:12px">💡 直接回答（本地）</button>
+      <div class="hint">或以结构化方式选择：</div>
+      <div class="field"><label>中心对象</label><select id="spCenter">${opts || '<option value="">（暂无对象）</option>'}</select></div>
+      <div class="field"><label>统计对象类别</label>${layerChips("spTarget", [LAYER_DEV])}</div>
+      <div class="field"><label>半径（km）</label><input id="spKm" class="inp" inputmode="decimal" value="${spatialRadiusKm}" style="max-width:140px"></div>
+      <div id="spOut" class="ai-out" style="white-space:pre-wrap;line-height:1.8"></div>`;
+    openModal("周边对象统计", html, `<button class="btn ghost" id="spClose">关闭</button><button class="btn ghost" id="spMap">在地图上圈出</button>`);
+    el("spClose").onclick = closeModal;
+    document.querySelectorAll("#spTarget .chip").forEach((c) => c.onclick = () => c.classList.toggle("on"));
+    el("spAsk").onclick = () => {
+      const q = (el("spQ").value || "").trim();
+      if (!q) return toast("请输入问题，例如「某某闸周边有几个感知设备」");
+      const p = parseSpatialQuestion(q);
+      if (!p) return (el("spOut").textContent = "未能从问题中识别出「本地台账里的对象名」或「半径」。请改用下方的结构化选择，或把对象名称写全（如：龚庄子进水闸周边有几个感知设备）。");
+      spatialRadiusKm = p.km;
+      el("spKm").value = p.km;
+      const rep = spatialReport(p.center, p.target, p.km);
+      el("spOut").textContent = rep.text;
+    };
+    el("spMap").onclick = () => {
+      const cid = el("spCenter").value;
+      const c = findRec(cid);
+      if (!c) return toast("请先选择中心对象");
+      const km = parseFloat(el("spKm").value);
+      if (!isFinite(km) || km <= 0) return toast("请填写有效的半径（km）");
+      spatialRadiusKm = km; saveUI();
+      const target = readLayerChips("spTarget", [LAYER_DEV])[0] || LAYER_DEV;
+      const rep = spatialReport(c, target, km);
+      el("spOut").textContent = rep.text;
+      closeModal();
+      spatialFocus(c, rep.hits, km);
+      toast(rep.oneLine);
+    };
+  }
+  // 详情气泡「周边对象统计」入口
+  function spatialFor(id) {
+    const r = findRec(id); if (!r) return;
+    openSpatialStat(r.id);
+  }
   function enterMeasure() {
     measureMode = true; measurePts = [];
     if (measureLine) overlayGroup.removeLayer(measureLine);
@@ -3228,6 +3761,8 @@ function popupHtml(r) {
         recSearch: (r) => [r.name, r.type, r.office, r.station, r.btype].filter(Boolean).join(" "),
         // #7 智能问询：注入机构层级与统计，让大模型能回答"某管理处有几个管理所"等 org 级问题（即使无独立条目也可由分组得出）
         orgContext: (q) => {
+          // v2.5.0 双数据层：机构统计分两层给出（用户口径：设备=感知设备，建筑物=水工建筑物），
+          // 并注入本地空间关系统计（需求四-a：某对象周边有几个感知设备 / 几个水工建筑物）
           const byMgmt = {};
           records.forEach((r) => {
             const mg = orgVal(r, "mgmt") || "(未分配管理处)";
@@ -3241,9 +3776,27 @@ function popupHtml(r) {
           const lines = Object.keys(byMgmt).sort().map((mg) => {
             const b = byMgmt[mg];
             const offs = Object.keys(b.offices).sort();
-            return `· ${mg}：共 ${b.count} 座建筑物，下属 ${offs.length} 个管理所（${offs.join("、")}），管理站 ${b.stations.size} 个。`;
+            return `· ${mg}：共 ${b.count} 个感知设备，涉及 ${offs.length} 个机构（${offs.join("、")}），库渠 ${b.stations.size} 个。`;
           });
-          return `【本地台账机构层级与统计】\n总建筑物数：${records.length}。\n` + (lines.join("\n") || "（暂无数据）");
+          const byOfficeB = {};
+          recordsBld.forEach((r) => {
+            const o = normOffice(orgVal(r, "office")) || "(未填管理所)";
+            byOfficeB[o] = (byOfficeB[o] || 0) + 1;
+          });
+          const bldLines = Object.keys(byOfficeB).sort().map((o) => `· ${o}：${byOfficeB[o]} 个水工建筑物`);
+          const btBld = {};
+          recordsBld.forEach((r) => { if (r.kind !== "place") btBld[r.btype] = (btBld[r.btype] || 0) + 1; });
+          const btTxt = Object.keys(btBld).sort((a, b) => btBld[b] - btBld[a]).slice(0, 12).map((k) => `${k} ${btBld[k]}`).join("、");
+          let out = `【本地台账机构层级与统计】\n`
+            + `感知设备总数：${records.length} 个。\n` + (lines.join("\n") || "（暂无数据）")
+            + `\n\n水工建筑物总数：${recordsBld.length} 个（独立数据层，与感知设备互不影响）。\n`
+            + (bldLines.join("\n") || "（暂无数据）")
+            + (btTxt ? `\n建筑物类型分布：${btTxt}。` : "")
+            + `\n\n两层数据的关系：水工建筑物作为基础底图，感知设备是布设在其周边/之上的监测设施；两层之间的导入通道、本地存储键完全独立。`;
+          const sp = spatialContextFor(q);
+          if (sp) out += "\n\n" + sp;
+          else out += `\n\n（若用户问「某对象周边有几个……」，属空间关系问题：本地计算口径为「半径 km 可指定、默认 ${SPATIAL_DEFAULT_KM} km」。可直接用菜单「智能检索 → 周边对象统计」离线得到精确结果。）`;
+          return out;
         },
         // #8 从 AI 结果文本中提取可下钻的关键词（管理所/管理站/建筑物名），供 followup 按钮使用
         suggestFrom: (txt) => {
@@ -3261,9 +3814,13 @@ function popupHtml(r) {
           toast("已在查询框填入：" + (kw || ""));
         },
         queryPrompt: (r) => `这是内部视频设备运维台账中的监控设备「${r.name}」，所属：${r.office || ""} / ${r.station || ""}，设备类型：${r.btype || ""}。已知参数：${JSON.stringify(r.params || {})}${r.description ? "；描述：" + r.description : ""}。请基于这些信息做结构化梳理与合理性校验，指出可能错漏，不要编造公开网络数据。`,
-        updatePrompt: (r) => `视频设备运维内部台账设备：${JSON.stringify({ name: r.name, office: r.office, station: r.station, btype: r.btype, params: r.params || {}, description: r.description || "" })}。请仅依据已有字段对缺失项做合理补全建议、对错漏项做校验。返回 JSON：{"params":{"键":"值"},"description":"一句话描述","changes":["变更说明"]}。只返回 JSON。`
+        updatePrompt: (r) => `视频设备运维内部台账设备：${JSON.stringify({ name: r.name, office: r.office, station: r.station, btype: r.btype, params: r.params || {}, description: r.description || "" })}。请仅依据已有字段对缺失项做合理补全建议、对错漏项做校验。返回 JSON：{"params":{"键":"值"},"description":"一句话描述","changes":["变更说明"]}。只返回 JSON。`,
+        // v2.5.0 需求四-a：空间关系问句本地直答（离线精确），无匹配返回 "" 时照常走大模型
+        localAnswer: (q) => spatialAnswerText(q)
       };
-      const acts = { search: focusSearch, filter: openFilter, add: openAdd, import: triggerImport, export: exportMenu,
+      const acts = { search: focusSearch, filter: openFilter, add: () => openAdd(LAYER_DEV), import: () => triggerImport(LAYER_DEV), export: exportMenu,
+        // v2.5.0 双数据层入口：导入水工建筑物 / 添加水工建筑物 / 添加地点 / 周边对象统计
+        importBld: importBuildings, addBld: () => openAdd(LAYER_BLD, "building"), addPlace: () => openAdd(LAYER_BLD, "place"), spatialStat: () => openSpatialStat(),
         batchPhotos: () => batchImportMenu("photos"), batchSheets: () => batchImportMenu("sheets"), exportPhotos: exportPhotosMenu,
         netdisk: netdiskMenu, lan: lanMenu,
         stats, locate, coord: getCoord, nearby: openNearby, measure: () => { measureMode ? exitMeasure() : enterMeasure(); }, layer: openBasemap,
@@ -3680,10 +4237,23 @@ function popupHtml(r) {
     openModal("我的改动备份", html, `<button class="btn ghost" id="syExp">导出备份</button><button class="btn primary" id="syImp">导入备份</button><button class="btn ghost" onclick="APP.close()">关闭</button>`);
     el("syExp").onclick = syncExport; el("syImp").onclick = syncImport;
   }
-  function triggerImport() {
+  function triggerImport(layer) {
     // 修复：WebView 下局部 input 被 GC → onchange 不触发 → 点击 csv 等"无反应"
     // Android 系统选择器按 MIME 过滤：.ovkmz/.7z 等无 MIME 映射会被隐藏导致「选不了」，故加 */* 兜底，格式由 doImport 校验
-    pickFiles({ accept: ".ovkmz,.kmz,.kml,.csv,.xls,.xlsx,.ovobj,.obj,application/vnd.google-earth.kmz,application/vnd.google-earth.kml+xml,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,*/*", onPick: (files) => files[0] && doImport(files[0]) });
+    pickFiles({ accept: ".ovkmz,.kmz,.kml,.csv,.xls,.xlsx,.ovobj,.obj,application/vnd.google-earth.kmz,application/vnd.google-earth.kml+xml,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,*/*", onPick: (files) => files[0] && doImport(files[0], layer) });
+  }
+  // v2.5.0：导入水工建筑物（子菜单）—— 只写建筑物层，绝不动感知设备
+  function importBuildings() {
+    openModal("导入水工建筑物",
+      `<div class="hint">把水利一张图（或奥维）导出的<b>水工建筑物</b>文件导入本机的「水工建筑物」数据层，作为基础底图，可查询、可搜索。</div>
+       <div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;line-height:1.9">
+         · 支持格式：ovkmz / kmz / csv / kml / xls / xlsx / ovobj<br>
+         · 该导入<b>只影响建筑物数据</b>；感知设备的导入导出行为完全不变<br>
+         · 同 id（或同名同坐标）的记录会<b>覆盖更新</b>，导入前会明确提示「新增 N 条 / 覆盖 M 条」
+       </div>`,
+      `<button class="btn ghost" id="ibCancel">取消</button><button class="btn primary" id="ibGo">选择文件…</button>`);
+    el("ibCancel").onclick = closeModal;
+    el("ibGo").onclick = () => { closeModal(); triggerImport(LAYER_BLD); };
   }
 
   // ================= 运行维护 / 旅游打卡 / 智能分析（P5 · 2026-08-23） =================
