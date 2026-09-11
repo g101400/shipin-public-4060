@@ -150,6 +150,8 @@
   const layerLabel = (r) => isBld(r) ? "水工建筑物" : "感知设备";
   // 按 id 在「两层合并视图」里找对象（设备优先，但两层 id 空间已被前缀隔离，不会串）
   function findRec(id) { return records.find((x) => x.id === id) || recordsBld.find((x) => x.id === id) || null; }
+  // 非筛选场景（经纬度搜索建议、AI 建卡候选等）要同时给两层对象；筛选/地图渲染则严格按「对象类别」走 shownRecords()
+  function shownRecordsDefault() { return records.concat(recordsBld); }
   function layerOn(k) { return Array.isArray(filter.layers) && filter.layers.length ? filter.layers.includes(k) : k === LAYER_DEV; }
   function shownRecords() {
     const out = [];
@@ -373,6 +375,7 @@
     applyDims();
     merge();
     render();
+    pruneFilter();   // v2.5.0 需求七：数据与名单就绪后，清掉上次会话残留的失效筛选值
   }
   // 单层合并（设备层/建筑物层同一套逻辑，只是 base 与 delta 来源不同）
   function mergeLayer(base, delta, layer) {
@@ -394,6 +397,11 @@
   // ---------- 组织层级配置（v2.4 五级化：局/管理处/所/站/段 · 与水利端同构同步）----------
   const BASE_OFFICES = ["地下水源所", "温泉所", "龙山所", "史山所", "埝头所", "水库所", "北台上所", "西田各庄所", "潮河所"];
   const BASE_OFFICES_SET = new Set(BASE_OFFICES);
+  /* v2.5.0 需求七：管理处基础名单（与「京密引水管理处 IP 信息统计表」的 9 所同源同属）。
+   * 作用：① 让「管理处」层级也有和「所」一样的「基础名单（锁定）」语义，不再只有「默认/自定义/数据派生」三态；
+   *       ② 筛选侧与设置侧的名单顺序统一为「默认 → 基础名单 → 其余」，两侧逐项对应、肉眼可核。 */
+  const BASE_MGMTS = ["京密引水管理处"];
+  const BASE_MGMTS_SET = new Set(BASE_MGMTS);
   const DEFAULT_ORG = { bureau: "水利工程管理中心", mgmt: "京密引水管理处", office: "水库所", station: "", section: "" };
   const ORG_LEVELS = [
     { key: "bureau", label: "局", field: "bureau" },
@@ -467,13 +475,47 @@
     const v = r[key];
     return (v == null || v === "") ? ((key === "bureau" || key === "mgmt" || key === "office") ? orgDefault(key) : "") : v;
   }
+  /* v2.5.0 需求七：机构名单统一排序 —— 默认值 → 基础名单 → 其余（字面序）。
+   * 筛选面板 chip、设置页列表、表单下拉三处共用同一顺序，
+   * 「筛选里看到的处所和设置里看到的对不上」这一观感从根上消除。 */
+  function orderDims(vals, defaults, bases) {
+    const def = ([].concat(defaults || [])).filter(Boolean);
+    const base = (bases || []).filter(Boolean).filter((v) => def.indexOf(v) < 0);
+    const rest = uniq((vals || []).filter(Boolean)).filter((v) => def.indexOf(v) < 0 && base.indexOf(v) < 0);
+    return def.concat(base, rest);
+  }
+  /* v2.5.0 需求七：剔除「幽灵筛选值」。
+   * 在设置页删掉/改掉某个管理处后，筛选里残留的旧勾选既不会渲染成 chip、又一直在后台过滤，
+   * 表现为「设置里已经没有这个处了，筛选却怎么都筛不出东西」。打开筛选/机构管理前先清一遍。
+   * 设备层与建筑物层两套条件各清各的（两层字段同名不同义，不能混用同一份维度）。 */
+  function pruneFilter() {
+    let dropped = 0;
+    const dev = { bureau: () => DIMS.bureaus, mgmt: () => DIMS.mgmts, office: () => DIMS.offices, station: () => DIMS.stations,
+      btype: () => DIMS.btypes, subsys: () => DIMS.subsys, midcat: () => DIMS.midcat, subcat: () => DIMS.subcat, trans: () => DIMS.trans };
+    Object.keys(dev).forEach((k) => {
+      const all = dev[k]() || [];
+      const arr = Array.isArray(filter[k]) ? filter[k] : [];
+      const kept = arr.filter((v) => all.includes(v));
+      dropped += arr.length - kept.length;
+      filter[k] = kept;
+    });
+    const bld = { mgmtBld: () => DIMS.mgmtsBld, officeBld: () => DIMS.officesBld, btypeBld: () => DIMS.btypesBld, kindBld: () => DIMS.kindsBld };
+    Object.keys(bld).forEach((k) => {
+      const all = bld[k]() || [];
+      const arr = Array.isArray(filter[k]) ? filter[k] : [];
+      const kept = arr.filter((v) => all.includes(v));
+      dropped += arr.length - kept.length;
+      filter[k] = kept;
+    });
+    return dropped;
+  }
   function applyDims() {
     const cfgB = (ORGCFG.bureaus || []).filter(Boolean);
-    DIMS.bureaus = uniq([...records.map((r) => orgVal(r, "bureau")).filter(Boolean), orgDefault("bureau"), ...cfgB]);
+    DIMS.bureaus = orderDims([...records.map((r) => orgVal(r, "bureau")), ...cfgB], [orgDefault("bureau")], []);
     const cfgM = (ORGCFG.mgmts || []).filter(Boolean);
-    DIMS.mgmts = uniq([...records.map((r) => orgVal(r, "mgmt")).filter(Boolean), orgDefault("mgmt"), ...cfgM]);
+    DIMS.mgmts = orderDims([...records.map((r) => orgVal(r, "mgmt")), ...cfgM], [orgDefault("mgmt")], BASE_MGMTS);
     const cfgOff = (ORGCFG.officeExtra || []).map((o) => normOffice(o)).filter(Boolean);
-    DIMS.offices = uniq([...records.map((r) => normOffice(orgVal(r, "office"))).filter(Boolean), ...BASE_OFFICES, ...cfgOff]);
+    DIMS.offices = orderDims([...records.map((r) => normOffice(orgVal(r, "office"))), ...cfgOff], orgDefault("office"), BASE_OFFICES);
     const cfgSt = (ORGCFG.stations || []).map((s) => s.name).filter(Boolean);
     DIMS.stations = uniq([...records.map((r) => r.station).filter(Boolean), ...cfgSt]);
     const cfgSec = (ORGCFG.sections || []).filter(Boolean);
@@ -487,12 +529,16 @@
     DIMS.trans = uniq([...records.map((r) => r.trans).filter(Boolean), ...(ORGCFG.transExtra || [])]);
     // v2.5.0 双数据层：水工建筑物层自有维度（水利口径：office=管理所、station=段、mgmt=管理处）
     // 与设备层刻意分开成 4 个独立数组，杜绝两套同名不同义的字段混进同一个下拉
+    // 顺序同样走 orderDims：与「筛选 → 水工建筑物」区块的 chip 顺序逐项对应（需求七）
     DIMS.btypesBld = uniq(recordsBld.filter((r) => (r.kind || "building") !== "place").map((r) => r.btype).filter(Boolean));
-    DIMS.officesBld = uniq(recordsBld.map((r) => normOffice(orgVal(r, "office"))).filter(Boolean));
-    DIMS.mgmtsBld = uniq(recordsBld.map((r) => orgVal(r, "mgmt")).filter(Boolean));
+    DIMS.officesBld = orderDims(recordsBld.map((r) => normOffice(orgVal(r, "office"))), [], BASE_OFFICES);
+    DIMS.mgmtsBld = orderDims(recordsBld.map((r) => orgVal(r, "mgmt")), [orgDefault("mgmt")], BASE_MGMTS);
     DIMS.kindsBld = uniq(recordsBld.map((r) => r.kind || "building").filter(Boolean));
     DIMS.stationsBld = uniq(recordsBld.map((r) => r.station).filter(Boolean));
     DIMS.sectionsBld = uniq(recordsBld.map((r) => r.section).filter(Boolean));
+    // 注意：这里**不**调用 pruneFilter()。applyDims() 在 load() 里 records/recordsBld 尚为空时也会被调，
+    // 那时维度只有自定义项，会把用户上次保存的筛选误清空。prune 统一放在
+    // load() 数据就绪后 与 openFilter()/openOrgManager() 打开时执行。
   }
   const DIMS = { bureaus: [], mgmts: [], offices: [], stations: [], sections: [], btypes: [], subsys: [], midcat: [], subcat: [], trans: [],
     btypesBld: [], officesBld: [], mgmtsBld: [], kindsBld: [], stationsBld: [], sectionsBld: [] };
@@ -886,6 +932,7 @@ function popupHtml(r) {
     { key: "place", label: "命名地点", icon: "📍" }
   ];
   function openFilter() {
+    const dropped = pruneFilter();   // v2.5.0 需求七：打开前先清失效值，避免「幽灵条件」把结果筛空
     const kwHist = loadKwHist();
     const group = (title, arr, sel) =>
       `<div class="fgroup"><div class="ftitle">${title}（<b class="cnt">${sel.length}</b> 已选）</div><div class="chips">` +
@@ -933,6 +980,8 @@ function popupHtml(r) {
       `</div></div>` +
       `<div class="fhit" id="fHit" style="margin-top:12px;padding:9px 12px;border:1px dashed var(--accent);border-radius:10px;color:var(--txt);font-size:13px">当前命中 <b id="fHitB" style="color:var(--accent);font-size:15px">0</b> 个监控点 · <b id="fHitP" style="color:var(--accent);font-size:15px">0</b> 张照片</div>`;
     openModal("筛选", html, `<button class="btn ghost" id="fExit">退出</button><button class="btn ghost" id="fReset">重置</button><button class="btn primary" id="fApply">应用</button>`);
+    // v2.5.0 需求七：在弹窗内提示被自动清除的失效条件（弹窗打开后再提示，否则 toast 被遮住）
+    if (dropped) setTimeout(() => toast(`已自动清除 ${dropped} 个已失效的筛选条件（设置中已删除/改名）`), 80);
     const body = el("modalBody");
     const liveCount = () => {
       const lay = [...body.querySelectorAll('.chip[data-layer].on')].map((c) => c.dataset.layer);
@@ -1071,6 +1120,7 @@ function popupHtml(r) {
     el("fStationMaint").onclick = () => openOrgManager("station"); // 兼容旧按钮 → 跳到机构层级并聚焦"站"
   }
   function openOrgManager(focusLevel) {
+    pruneFilter();   // v2.5.0 需求七：进设置页前先清失效值，与筛选侧名单口径当场对齐
     const LV = {
       bureau:  { label: "局",     field: "bureau",  dims: () => DIMS.bureaus,  extra: () => ORGCFG.bureaus,  setExtra: (a) => { ORGCFG.bureaus = a; } },
       mgmt:    { label: "管理处", field: "mgmt",    dims: () => DIMS.mgmts,    extra: () => ORGCFG.mgmts,    setExtra: (a) => { ORGCFG.mgmts = a; } },
@@ -1089,9 +1139,11 @@ function popupHtml(r) {
       return (L.dims() || []).map((v) => {
         const cnt = cntOf(lv, v);
         const isDef = isDefaultOf(lv, v);
-        const isBase = (lv === "office") && BASE_OFFICES_SET.has(v);
+        const isBase = (lv === "office" && BASE_OFFICES_SET.has(v)) || (lv === "mgmt" && BASE_MGMTS_SET.has(v));
         const isExtra = L.extra ? (L.extra() || []).includes(v) : ((ORGCFG.stations || []).some((x) => x.name === v));
-        const tag = isDef ? '<span class="cfg-lock">⭐ 默认</span>' : isBase ? '<span class="cfg-lock">🔒 基础名单</span>' : isExtra ? "自定义" : "数据派生";
+        const tag = isDef
+          ? `<span class="cfg-lock">${isBase ? "⭐ 默认 · 🔒 基础名单" : "⭐ 默认"}</span>`
+          : isBase ? '<span class="cfg-lock">🔒 基础名单</span>' : isExtra ? "自定义" : "数据派生";
         let acts = `<button class="btn tiny" data-ren="${lv}" data-v="${esc(v)}">重命名</button>`;
         if (!isDef && !isBase && isExtra) acts += ` <button class="btn tiny danger" data-del="${lv}" data-v="${esc(v)}">删除</button>`;
         let parent = "";
@@ -1115,7 +1167,7 @@ function popupHtml(r) {
       `<input class="cfg-definp" id="def_${lv}" value="${esc(orgDefault(lv))}" placeholder="默认${LV[lv].label}名称" style="flex:1"></div>`;
     const html = `<div class="hint">组织层级：局 → 管理处 → 所 → 站 → 段。此处增删改会<b>同步更新</b>筛选、导入导出、添加监控点等全部用到该层级的位置；重命名可级联更新监控点。</div>` +
       sec("bureau", "顶级单位，默认：" + esc(orgDefault("bureau"))) +
-      sec("mgmt", "局的下级管理处，默认：" + esc(orgDefault("mgmt"))) +
+      sec("mgmt", "本栏与「筛选 → 管理处」<b>同一份名单、同一顺序</b>（默认 → 🔒 基础名单 → 其余），逐项对应。基础名单为「京密引水管理处」，不可删除、不可改名；自行添加的处显示为「自定义」，可重命名或删除（改名会级联同步到数据）。默认：" + esc(orgDefault("mgmt"))) +
       sec("office", "基础 9 所名单不可删；自定义可重命名/删除。") +
       sec("station", "站隶属于所（右侧下拉可调整）。") +
       sec("section", "段隶属于站（可留空）。") +
@@ -2364,7 +2416,7 @@ function popupHtml(r) {
 
   // 分享单条监控点（含照片 + 关键信息）给微信 / QQ / 飞书等：打包 zip 走系统分享面板
   async function shareBuilding(rid) {
-    const r = records.find((x) => x.id === rid); if (!r) return;
+    const r = findRec(rid); if (!r) return;
     const phs = (r.photos || []).filter((p) => p.dataUrl && p.dataUrl.startsWith("data:") && p.dataUrl.includes(";base64,"));
     if (!phs.length) return toast("该监控点没有可分享的照片");
     busy("正在准备分享文件，请稍后…");
@@ -3149,6 +3201,9 @@ function popupHtml(r) {
       <b>🔎 知识库增强（v2.4.8）</b>：<b>模糊检索</b>错字 / 缺字 / 语序不同也能命中（结果带相关度百分比）；<b>提示词生成</b>把「问题 + 知识库最相关片段 + 长期记忆」自动拼成完整提示词，可复制自用或直接投喂大模型；<b>存疑与反向查询</b>可对任一条目打标并反查知识库辅助核实；设置新增「<b>通过 GitHub 升级</b>」（内部版查 *-internal-4060、公开版查 *-public-4060，与网盘双通道隔离一致）。<br>
       <b>🔐 启动口令保护（内部版，v2.4.9）</b>：首次启动校验启动口令，支持「记住本机 / 修改口令 / 忘记口令」；忘记口令时请联系软件开发者或管理员协助重置（出厂口令见交付说明）。公开版与古建为单通道发布，无启动口令。<br>
       <b>📶 智能传输提示</b>：本机导入 / 导出（不走网络）不再弹流量提醒；小文件直接执行；仅大文件（≥50MB）弹「操作提示」并显示文件大小与耗时提醒。<br>
+      <b>🏛️ 局 / 管理处到底管什么（v2.5.0 答疑）</b>：不是摆设，六个环节都在用——① <b>筛选</b>（管理处 / 管理所多选，直接决定地图与列表命中）；② <b>新增 / 编辑表单</b>的「局 / 管理处」下拉；③ <b>导出 CSV</b> 第 2 列「管理处」；④ <b>导出文件夹路径</b>（按 管理处 / 所 / 段--类型 分层）；⑤ <b>AI 机构问询</b>（按管理处分组统计）；⑥ <b>改名级联</b>（在设置里改管理处名，会同步更新所有设备/建筑物该字段）。<br>
+      <b>🔁 名单一致性（v2.5.0）</b>：「筛选 → 管理处 / 管理所」与「设置 → 机构层级与默认名称管理」用的是<b>同一份名单、同一顺序</b>（默认值 → 🔒 基础名单 → 其余），逐项对应；基础名单为「京密引水管理处」与 9 个所，不可删除/改名，自行添加的显示为「自定义」可改名或删除。<br>
+      <b>🏗️ 双数据层（v2.5.0）</b>：感知设备与「水工建筑物」是<b>两个完全独立的数据层</b>——文件独立（data.js / data_buildings.js）、本地存储键独立（delta / delta_bld）、导入通道独立、id 前缀独立（<code>bld:</code>）。导入水工建筑物<b>永远不会影响或覆盖感知设备</b>；原来的感知设备导入 / 导出行为保持不变。筛选 / 查询 / 导航统一由「<b>对象类别</b>」选择器决定看哪一层，默认只勾「感知设备」。<br>
       <b>🖼️ 图片预览增强</b>：电脑端鼠标<b>拖拽平移 + 滚轮缩放</b>（1~5 倍），手机端<b>双指缩放 + 拖动</b>，长按可调出菜单；键盘 + / − / 方向键 / 0 复位亦可用。<br>
       <b>📝 笔记导出</b>：备忘录 / 运维记录 / 游记支持一键<b>导出 Word（.doc）</b>与<b>导出 PDF</b>（走系统打印「另存为 PDF」）。<br>
       <b>🧭 对象智能检索</b>（菜单 → 对象智能检索）：<b>参数反查</b>（按参数键 / 值反查对象）、<b>分类统计</b>（按类型 / 管理所 / 参数汇总）、<b>类型定义入库</b>（向量化后参与检索）、<b>预案文档关联</b>、<b>生成说明文档</b>（可导出 Word / PDF）、<b>PDF 转 Word</b>。<br>
@@ -3204,6 +3259,16 @@ function popupHtml(r) {
   }
   // 版本变更：单一来源 APP_VER + 内置变更摘要（与文档同步维护）
   const CHANGELOG = [
+    ["v2.5.0", "2026-09-11", [
+      "🏗️ 双数据层（v2.5.0 核心）：感知设备与水工建筑物是<b>两个完全独立的数据层</b>——文件（data.js / data_buildings.js）、本地存储键（delta / delta_bld）、导入通道、id 前缀（<code>bld:</code>）全部独立；<b>导入水工建筑物永远不会影响或覆盖感知设备</b>；原来的感知设备导入/导出行为完全保留",
+      "新增菜单「添加水工建筑物」/「添加地点」（如天安门等有名且坐标无歧义的位置），「导入水工建筑物」独立子菜单：只写建筑物层、同 id 覆盖并提示",
+      "筛选 / 查询 / 导航统一由「<b>对象类别</b>」选择器控制看哪一层（默认勾选感知设备；可加选水工建筑物 / 命名地点）；新建建筑物有「对象类别」专属表单字段",
+      "智能问答空间关系：「某建筑物周边有几个感知设备 / 某感知设备周边有几个水工建筑物」自然语言直接问，半径以 km 为单位默认 0.5 km；空间统计菜单可手动选中心 + 半径，逐层列出命中",
+      "AI 上下文新增「空间关系统计」注入块：实时计算 0.5 km 半径内「感知设备 ⇄ 水工建筑物」互相数；与原有机构层级统计口径并列",
+      "机构名单一致性：管理处 / 管理所在「筛选」与「设置 → 组织与类型管理」同一份、同顺序；筛选打开前 pruneFilter 自动清失效条件",
+      "导出文件自动分流——选水工建筑物即只导建筑物层，选感知设备即只导设备层；导出 Word/PDF 同步按当前对象类别",
+      "升级包 schema 升到 5：包内含 <code>delta_bld</code> 字段；旧版 v2.4.x 升级包导入兼容（仅写设备层，写入 delta_bld 为空）"
+    ]],
     ["v2.4.9", "2026-09-11", ["启动口令保护（内部版）：首次启动校验启动口令，支持「记住本机 / 修改密码 / 忘记密码」；忘记口令提示改为「请联系软件开发者 / 管理员协助重置」，出厂口令仅见交付说明；对话框、帮助与提示中一律不出现明文口令", "智能传输提示：本机导入 / 导出（不走网络）不再弹流量提醒、小文件直接执行不打扰；仅大文件（≥50MB）改弹「操作提示」并显示文件大小与耗时提醒", "子菜单「隐藏 / 收藏」按钮与菜单文字间距拉大，避免误触（仍为长按触发 + 二次确认）", "修复导入「未找到名称列」：奥维导出的 GBK / ANSI 编码 CSV 不再乱码——按 BOM / UTF-8 / GB18030 / GBK / Big5 自动识别编码", "CSV 导出列规范化：第 8 列「参数说明」改为「Comment」，多参数分隔符由「;」改为「|」，并新增「文件夹」列（管理处 / 管理所 / 段--类型），与奥维导入格式对齐", "导入兼容自身导出：参数分隔符「|」「;」与半角「:」/ 全角「：」均可解析，导出的表格重新导入后参数可正常显示到感知设备详情", "ovkmz 导出备注：参数按「键 : 值|」并换行组织，与奥维原装格式一致", "管理所智能识别：9 所标准名单模糊匹配 + 潮河 / 水库特例归并 + 「站」归为所的下一级；导入、导出、筛选三处口径统一", "导出前实时统计「将导出 N 个感知设备 / M 张照片」（随范围与管理所勾选联动）；照片导出补 full → dataUrl → thumb 兜底链，三者皆空时明确提示并写入错误日志", "图片预览增强：电脑端支持鼠标拖拽平移 + 滚轮缩放（1~5 倍），手机端支持双指缩放 + 拖动 + 长按菜单，另支持键盘 + / - / 方向键 / 0 复位", "备忘录 / 设备运维记录新增「导出 Word」「导出 PDF」（PDF 走系统打印「另存为 PDF」）", "新增「对象智能检索」菜单组：参数反查 / 分类统计 / 类型定义入库（向量化）/ 预案文档关联 / 生成说明文档 / PDF 转 Word，并支持导出 Word 与 PDF"]],
     ["v2.4.8", "2026-09-07", ["知识库智能化：新增「知识库模糊检索」——错字/缺字/语序不同也能命中（如「跌水闸」可命中「跌水节制闸」），结果带相关度百分比，可对任一条目直接反向查询或标为存疑", "新增「提示词生成」：问题 + 知识库最相关片段 + 长期记忆自动拼装成完整提示词，可复制自用或直接投喂大模型；AI 查询结果新增「查看提示词」按钮", "新增「AI 记忆（Hermes）」：查询/纠错/存疑自动沉淀为记忆并在提示词中引用，支持查看、按关键词检索、一键清空（不影响知识条目）", "新增「存疑与反向查询」：不确定的内容可打存疑标记（标签：存疑/待核实），系统用其内容反向检索知识库给出最相关条目辅助核实；AI 查询结果可一键「标为存疑」", "修复重要缺陷：AI 调用时已生成知识库上下文却仍把原始问题发给模型（知识库等于没接上），现已真正随请求发送", "设置新增「通过 GitHub 升级」子菜单（内部版查 *-internal-4060、公开版查 *-public-4060，与网盘双通道隔离一致；私有库支持填 GitHub 只读 Token）", "菜单可隐藏：长按任意菜单项选择隐藏，设置中「恢复隐藏子菜单 / 隐藏子菜单列表」随时恢复，恢复入口受保护不会被自己锁死", "导出位置可自定义：设置「导出文件位置」预配置默认文件夹，导出前可询问（批量导出只问一次），知识库导出默认名改为「知识库YYYY-MM-DD」", "奥维 ovkmz 互通修复：导入剥除 UTF-8 BOM（原装文件不再报 xml 语法错误）、附件路径归一（照片不再只显示占位符）；导出照片目录对齐原装 ovatta/、参数分隔符对齐「键 : 值|」"]],
     ["v2.4.7", "2026-09-05", ["升级按钮与自动升级：设置菜单新增「检查新版本」一键检测（百度网盘）；发现新版自动下载安装包（直链走 fetch 分块下载+进度、下载完成提示安装位置；百度网盘分享页自动打开并备好提取码），可在升级对话框关闭自动下载", "感知与水利保持公开/内部双通道隔离；古建改单通道（数据本身公开）", "发版自动上传百度网盘：构建收尾自动把安装包 + latest.json 上传到网盘「一张图发布/感知设备运维一张图/<通道>/」目录（未登录时优雅跳过）"]],
@@ -3487,11 +3552,12 @@ function popupHtml(r) {
       const q = e.target.value.trim().toLowerCase();
       const box = el("cdResults");
       if (!q) { box.innerHTML = ""; return; }
-      const rs = records.filter((r) => `${r.name}${r.office}${r.station}`.toLowerCase().includes(q)).slice(0, 30);
+      // v2.5.0：搜索范围含两层对象（设备 + 水工建筑物），与「对象类别」口径一致
+      const rs = shownRecordsDefault().filter((r) => `${r.name}${r.office || ""}${r.station || ""}${r.btype || ""}`.toLowerCase().includes(q)).slice(0, 30);
       box.innerHTML = rs.map((r) =>
         `<div class="cd-item" data-id="${r.id}"><span>${esc(r.name)}</span><span class="cd-xy">${(+r.lat).toFixed(5)} , ${(+r.lon).toFixed(5)}</span></div>`).join("");
       box.querySelectorAll(".cd-item").forEach((it) => it.onclick = () => {
-        const rr = records.find((x) => x.id === it.dataset.id); if (!rr) return;
+        const rr = findRec(it.dataset.id); if (!rr) return;
         cur.lat = +rr.lat; cur.lon = +rr.lon; setDisp();
         map.flyTo([cur.lat, cur.lon], Math.max(map.getZoom(), 15), { duration: 0.6 });
         toast("已定位：" + rr.name);
@@ -3517,7 +3583,8 @@ function popupHtml(r) {
     });
   }
   async function openPhoto(rid, pi) {
-    const r = records.find((x) => x.id === rid); if (!r || !r.photos[pi]) return;
+    // v2.5.0：改用 findRec —— 建筑物层的照片也要能预览（需求五），原来只在设备层找会「点了没反应」
+    const r = findRec(rid); if (!r || !r.photos[pi]) return;
     lbRid = rid; lbPi = pi;
     const ph = r.photos[pi];
     el("lbImg").src = await loadPhotoFull(ph);
@@ -3531,7 +3598,7 @@ function popupHtml(r) {
     el("lbIdx").style.display = "none";
   }
   async function switchPhoto(d) {
-    const r = records.find((x) => x.id === lbRid); if (!r) return;
+    const r = findRec(lbRid); if (!r) return;
     const n = (r.photos || []).length; if (n < 2) return;
     lbPi = (lbPi + d + n) % n;
     const ph = r.photos[lbPi];
@@ -3541,7 +3608,7 @@ function popupHtml(r) {
     el("lbIdx").textContent = (lbPi + 1) + " / " + n;
   }
   async function saveCurrentPhoto() {
-    const r = records.find((x) => x.id === lbRid); if (!r) return;
+    const r = findRec(lbRid); if (!r) return;
     const ph = r.photos[lbPi]; if (!ph) return;
     const src = await loadPhotoFull(ph);
     if (!src) return;
@@ -3592,7 +3659,7 @@ function popupHtml(r) {
     // 长按弹出控制条（保存/分享/切换）
     const startLP = () => { clearTimeout(lpTimer); lpTimer = setTimeout(() => {
       el("lbBar").style.display = "flex";
-      const r = records.find((x) => x.id === lbRid);
+      const r = findRec(lbRid);
       if (r && (r.photos || []).length > 1) {
         el("lbPrev").style.display = "flex"; el("lbNext").style.display = "flex"; el("lbIdx").style.display = "block";
         el("lbIdx").textContent = (lbPi + 1) + " / " + r.photos.length;
@@ -3803,6 +3870,7 @@ function popupHtml(r) {
           const text = txt || "";
           const set = new Set();
           records.forEach((r) => { [r.office, r.station, r.name, r.btype].forEach((v) => { if (v && text.indexOf(String(v)) >= 0) set.add(String(v)); }); });
+          recordsBld.forEach((r) => { [r.office, r.station, r.name, r.btype].forEach((v) => { if (v && text.indexOf(String(v)) >= 0) set.add(String(v)); }); });
           return [...set].slice(0, 10);
         },
         // #8 双击 followup 关键词 → 填入查询框并立即检索
@@ -4181,15 +4249,21 @@ function popupHtml(r) {
     ];
   }
   async function deleteRecord(id) {
-    const r = records.find((x) => x.id === id); if (!r) return;
+    // v2.5.0 双数据层：右键菜单的删除必须按对象所属层写**对应的** store 键。
+    // 原实现无条件 Store.patch（设备层），删建筑物时会把 "bld:xxx" 塞进设备层 deleted，
+    // 表现为「确认删除后建筑物还在」+ 设备增量被污染。
+    const r = findRec(id); if (!r) return;
+    const bld = isBld(r);
     if (!confirm("确认删除「" + (r.name || "未命名") + "」？此操作不可恢复。")) return;
-    await Store.patch((d) => {
+    const patchFn = (d) => {
       d.added = d.added || []; d.updated = d.updated || {};
       const i = d.added.findIndex((a) => a.id === id);
       if (i >= 0) d.added.splice(i, 1);
       else { d.deleted = d.deleted || []; if (!d.deleted.includes(id)) d.deleted.push(id); delete d.updated[id]; }
-    });
-    DELTA = await Store.get(); merge(); render();
+    };
+    if (bld) { await Store.bld.patch(patchFn); DELTA_BLD = await Store.bld.get(); }
+    else { await Store.patch(patchFn); DELTA = await Store.get(); }
+    merge(); render();
     toast("已删除：" + (r.name || "未命名"));
   }
   function exportOne(r) {
@@ -4443,7 +4517,7 @@ function popupHtml(r) {
   function stopLbCycle() { if (_lbTimer) { clearInterval(_lbTimer); _lbTimer = null; } }
   // 新入口：接收某建筑物的多照片数组，支持自动轮播
   async function openPhotoCycle(rid) {
-    const r = records.find((x) => x.id === rid); if (!r || !r.photos || !r.photos.length) return;
+    const r = findRec(rid); if (!r || !r.photos || !r.photos.length) return;
     const photos = r.photos;
     window.__CUR_PHOTOS__ = photos;
     lbRid = rid; lbPi = 0;
@@ -4802,10 +4876,12 @@ function popupHtml(r) {
 
   // ---------- 启动 ----------
   window.APP = { showAllParams, edit: openEdit, shareBuilding,   /* v2.4.3 修复：气泡「分享」按钮 onclick=\"APP.shareBuilding()\" 长期未导出 → 点击即 script error */ del, openPhoto, viewPhotos: openPhotoCycle, navigate, nearCenter, close: closeModal, back,
-    receivePhoto, receiveSheet, receiveDone, receiveError, receiveCancel, onExportResult };
+    receivePhoto, receiveSheet, receiveDone, receiveError, receiveCancel, onExportResult,
+    spatialFor, spatialStat: openSpatialStat, addBld: () => openAdd(LAYER_BLD, "building"), addPlace: () => openAdd(LAYER_BLD, "place"), importBld: importBuildings };
   // v2.4.3：暴露 ai.js 依赖的全局 helper（三端一致），否则 AI 菜单 openModal is not defined → script error
   window.el = el;
-  window.__getRecords = function () { return records; };  // v2.4.3：journal.js 绑定建筑物/设备列表用
+  window.__getRecords = function () { return records.concat(recordsBld); };  // v2.4.3：journal.js/objsearch.js 取当前库内对象；v2.5.0 起含水工建筑物层
+  window.__getLayers = function () { return { dev: records, bld: recordsBld }; };  // v2.5.0：分层取数（供分层导出/统计等外部调用）
   window.__APP_VER__ = APP_VER;   // v2.4.3：upgrade.js 版本兼容检查的唯一版本来源
   window.openModal = openModal;
   window.closeModal = closeModal;
