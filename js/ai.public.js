@@ -455,6 +455,14 @@
       if (!q) { toast("请输入问题"); return; }
       el("aiFQOut").innerHTML = '<div class="hint">正在调用大模型问询，请稍候…</div>';
       const actBox = document.getElementById("aiFQActions"); if (actBox) actBox.innerHTML = "";
+      // v2.5.0：若领域提供了本地直答（如「某建筑物周边有几个感知设备」的空间关系统计），
+      // 先给出本地精确结果，再照常调用大模型——本地口径权威，模型只做润色与补充。
+      let localTxt = "";
+      try { localTxt = (dm.localAnswer && typeof dm.localAnswer === "function") ? (dm.localAnswer(q) || "") : ""; } catch (e) { localTxt = ""; }
+      const localHead = localTxt
+        ? '<div class="hint">📖 本地台账直答（离线精确计算，权威口径）</div><div class="ai-out" style="white-space:pre-wrap;line-height:1.8">' + esc(localTxt) + '</div><div class="hint">以下为大模型基于本地统计的回答：</div>'
+        : "";
+      if (localHead) el("aiFQOut").innerHTML = localHead;
       try {
         const ctx = (dm.orgContext && typeof dm.orgContext === "function") ? dm.orgContext(q) : "";
         const sys = dm.internal
@@ -462,7 +470,7 @@
           : "你是古建知识助手，基于你掌握的资料与本地知识库作答，简明、专业。";
         const prompt = ctx ? ("【本地台账统计信息】\n" + ctx + "\n\n---\n\n用户问题：" + q) : q;
         const txt = await strategyCall(prompt, { system: sys, maxTokens: 1400 });
-        el("aiFQOut").innerHTML = mdLite(txt);
+        el("aiFQOut").innerHTML = localHead + mdLite(txt);
         let h = '<button class="btn ghost" id="aiFQCopy">复制结果</button>';
         if (window.KB) h += '<button class="btn primary" id="aiFQSaveKB">保存到知识库</button>';
         if (actBox) {
@@ -474,7 +482,7 @@
         pushHistory({ q, recId: "", recName: "智能问询：" + q.slice(0, 30), online: false, time: Date.now(), answer: txt });
         if (window.__hermesNote) window.__hermesNote("智能问询", q.slice(0, 80) + " → " + (txt || "").slice(0, 80));
       } catch (e) {
-        el("aiFQOut").innerHTML = '<div class="err">调用失败：' + esc2(e.message) + "</div>";
+        el("aiFQOut").innerHTML = localHead + '<div class="err">调用失败：' + esc2(e.message) + (localTxt ? "（上方为本地直答结果，可离线使用）" : "") + "</div>";
       }
     };
     el("aiFQSend").onclick = send;
