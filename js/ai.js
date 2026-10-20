@@ -11,7 +11,7 @@
 
   // OpenRouter 默认密钥（用户 jykjk2010 提供，2026-08-28 轮换导入）。
   // 仅用于本地 App 调用；如对外分发请改为空字符串让用户自行填写，并建议到 openrouter.ai 重置该密钥。
-  const DEFAULT_OR_KEY = """";
+  const DEFAULT_OR_KEY = "";
 
   // ---------- 设置持久化 ----------
   // 默认预置 3 个 OpenRouter 免费模型（已实测可用 2026-08-28）：
