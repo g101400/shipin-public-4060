@@ -85,8 +85,8 @@
     } catch (_) {}
   })();
   // 天地图 Token：v2.4.3 优先读 localStorage(appsettings_key_v1) → index.html __CONFIG__ → 内置默认（let 允许运行时改）
-  const TIANDITU_DEFAULT = "61691764ff68bf341c4c9c4770b24b5f";
-  const TIANDITU_SERVER_DEFAULT = "d258e3622cb1755b59a59e4b7ac6d96e";
+  const TIANDITU_DEFAULT = "";
+  const TIANDITU_SERVER_DEFAULT = "";
   let TIANDITU = TIANDITU_DEFAULT, TIANDITU_SERVER = TIANDITU_SERVER_DEFAULT;
   try {
     const _s = JSON.parse(localStorage.getItem("appsettings_key_v1") || "null");
