@@ -1,0 +1,5094 @@
+/* app.js —— 视频设备运维一张图（增强版：筛选/增删改/多照片/导入导出/定位/导航/测距/周边） */
+(function () {
+  // ===== v2.4.6 老版本 WebView 兼容垫片（必须在任何业务代码之前执行）=====
+  // 缺一个 API 整份 app.js 就初始化中断（表现为「点菜单 → 运行错误:script error.」），
+  // 而 app.js 内有数十处 querySelectorAll(...).forEach，逐个改写不现实 → 在此统一补齐。
+  (function () {
+    try {
+      if (typeof NodeList !== "undefined" && NodeList.prototype && !NodeList.prototype.forEach) {
+        NodeList.prototype.forEach = Array.prototype.forEach;
+      }
+      if (typeof HTMLCollection !== "undefined" && HTMLCollection.prototype && !HTMLCollection.prototype.forEach) {
+        HTMLCollection.prototype.forEach = Array.prototype.forEach;
+      }
+      if (!String.prototype.padStart) {
+        String.prototype.padStart = function (n, c) {
+          c = c == null ? " " : String(c); var s = String(this);
+          while (s.length < n) s = c + s; return s;
+        };
+      }
+      if (!String.prototype.padEnd) {
+        String.prototype.padEnd = function (n, c) {
+          c = c == null ? " " : String(c); var s = String(this);
+          while (s.length < n) s = s + c; return s;
+        };
+      }
+      if (!Array.prototype.find) {
+        Array.prototype.find = function (pred, thisArg) {
+          for (var i = 0; i < this.length; i++) { if (pred.call(thisArg, this[i], i, this)) return this[i]; }
+          return undefined;
+        };
+      }
+      if (!Array.prototype.findIndex) {
+        Array.prototype.findIndex = function (pred, thisArg) {
+          for (var i = 0; i < this.length; i++) { if (pred.call(thisArg, this[i], i, this)) return i; }
+          return -1;
+        };
+      }
+      if (typeof Array.from !== "function") {
+        Array.from = function (o, mapFn) {
+          var a = [], i;
+          if (o && typeof o.length === "number") { for (i = 0; i < o.length; i++) a.push(o[i]); }
+          else if (o && typeof o.next === "function") { var r = o.next(); while (!r.done) { a.push(r.value); r = o.next(); } }
+          return mapFn ? a.map(mapFn) : a;
+        };
+      }
+      if (!Object.assign) {
+        Object.assign = function (t) {
+          for (var i = 1; i < arguments.length; i++) {
+            var s = arguments[i]; if (!s) continue;
+            for (var k in s) { if (Object.prototype.hasOwnProperty.call(s, k)) t[k] = s[k]; }
+          }
+          return t;
+        };
+      }
+      if (!String.prototype.includes) {
+        String.prototype.includes = function (x, p) { return String(this).indexOf(x, p || 0) >= 0; };
+      }
+      if (!Array.prototype.includes) {
+        Array.prototype.includes = function (x) { return this.indexOf(x) >= 0; };
+      }
+    } catch (e) { /* 垫片失败不影响主流程 */ }
+  })();
+  // v2.4.4：全局错误捕获（功能⑯ 错误日志）——window.onerror / unhandledrejection 入环形缓冲 localStorage，供「信息与帮助→错误日志」查看复制
+  (function () {
+    try {
+      var KEY = (window.__APP_ID__ || "app") + "_errlog_v1";
+      function push(msg) {
+        try {
+          var arr = JSON.parse(localStorage.getItem(KEY) || "[]");
+          if (!Array.isArray(arr)) arr = [];
+          arr.push({ t: new Date().toISOString(), m: String(msg).slice(0, 600) });
+          if (arr.length > 300) arr = arr.slice(-300);
+          try { localStorage.setItem(KEY, JSON.stringify(arr)); } catch (e) {}
+        } catch (_) {}
+      }
+      window.__ERR_LOG_PUSH__ = push;
+      window.addEventListener("error", function (e) {
+        var loc = e && e.filename ? (" @ " + String(e.filename).split("/").pop() + ":" + (e.lineno || 0)) : "";
+        push((e && e.message ? e.message : "error") + loc);
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        var r = e && e.reason;
+        push("Promise: " + (r && (r.stack || r.message) ? (r.stack || r.message) : String(r)));
+      });
+    } catch (_) {}
+  })();
+  // 天地图 Token：v2.4.3 优先读 localStorage(appsettings_key_v1) → index.html __CONFIG__ → 内置默认（let 允许运行时改）
+  const TIANDITU_DEFAULT = "61691764ff68bf341c4c9c4770b24b5f";
+  const TIANDITU_SERVER_DEFAULT = "d258e3622cb1755b59a59e4b7ac6d96e";
+  let TIANDITU = TIANDITU_DEFAULT, TIANDITU_SERVER = TIANDITU_SERVER_DEFAULT;
+  try {
+    const _s = JSON.parse(localStorage.getItem("appsettings_key_v1") || "null");
+    if (_s && _s.TIANDITU_TOKEN) TIANDITU = _s.TIANDITU_TOKEN;
+    if (_s && _s.TIANDITU_SERVER_TOKEN) TIANDITU_SERVER = _s.TIANDITU_SERVER_TOKEN;
+    if (!localStorage.getItem("appsettings_key_v1") && window.__CONFIG__ && window.__CONFIG__.TIANDITU_TOKEN) {
+      TIANDITU = window.__CONFIG__.TIANDITU_TOKEN;
+      if (window.__CONFIG__.TIANDITU_SERVER_TOKEN) TIANDITU_SERVER = window.__CONFIG__.TIANDITU_SERVER_TOKEN;
+    }
+  } catch (e) {}
+  // Leaflet 默认图标走本地文件
+  L.Icon.Default.imagePath = "lib/images/";
+  L.Icon.Default.mergeOptions({
+    iconUrl: "lib/images/marker-icon.png",
+    iconRetinaUrl: "lib/images/marker-icon-2x.png",
+    shadowUrl: "lib/images/marker-shadow.png"
+  });
+  // 监控点标记：倒立蓝色水滴状（尖端朝上、圆鼓朝下覆盖点位）、中心小白点（内联 SVG，缩放清晰，APK/Web 通用）
+  const MARKER = L.divIcon({
+    className: "drop-marker",
+    html: `<svg width="28" height="40" viewBox="0 0 28 40" xmlns="http://www.w3.org/2000/svg"><path d="M14 2 C 20 12 26 18 26 26 A 12 12 0 1 1 2 26 C 2 18 8 12 14 2 Z" fill="#3da9fc" stroke="#1b6fb8" stroke-width="1.5"/><circle cx="14" cy="26" r="5" fill="#ffffff"/></svg>`,
+    iconSize: [28, 40], iconAnchor: [14, 38], popupAnchor: [0, -30]
+  });
+  // 筛选命中标记：倒立水滴（尖端朝下、圆鼓朝上），绿色，区别于普通蓝色正水滴
+  const FILTER_MARKER = L.divIcon({
+    className: "drop-marker-filter",
+    html: `<svg width="28" height="40" viewBox="0 0 28 40" xmlns="http://www.w3.org/2000/svg"><path d="M14 38 C 20 28 26 22 26 14 A 12 12 0 1 1 2 14 C 2 22 8 28 14 38 Z" fill="#2ecc8f" stroke="#1d8f63" stroke-width="1.5"/><circle cx="14" cy="14" r="5" fill="#ffffff"/></svg>`,
+    iconSize: [28, 40], iconAnchor: [14, 38], popupAnchor: [0, -30]
+  });
+  /* v2.5.0 水工建筑物标记：琥珀色方形底座（一眼与蓝色水滴状感知设备区分开）。
+   * 需求二「水工建筑物作为基础底图」→ 建筑物在下层、设备在上层，形状与配色双重区分。 */
+  const BLD_MARKER = L.divIcon({
+    className: "bld-marker",
+    html: `<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg"><path d="M13 1 L25 9 L25 25 L13 33 L1 25 L1 9 Z" fill="#f0a24b" stroke="#a9660f" stroke-width="1.5"/><rect x="8" y="13" width="10" height="8" rx="1" fill="#fff8ec"/></svg>`,
+    iconSize: [26, 34], iconAnchor: [13, 32], popupAnchor: [0, -26]
+  });
+  const BLD_FILTER_MARKER = L.divIcon({
+    className: "bld-marker-filter",
+    html: `<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg"><path d="M13 1 L25 9 L25 25 L13 33 L1 25 L1 9 Z" fill="#2ecc8f" stroke="#1d8f63" stroke-width="1.5"/><rect x="8" y="13" width="10" height="8" rx="1" fill="#f2fff8"/></svg>`,
+    iconSize: [26, 34], iconAnchor: [13, 32], popupAnchor: [0, -26]
+  });
+
+  // 全局版本号（单一事实来源：关于 / 版本变更 / 帮助 均引用此处，避免硬编码漂移）
+  const APP_VER = "v2.5.0";
+
+  // ---------- 状态 ----------
+  let BASE = [], DELTA = { added: [], updated: {}, deleted: [] }, records = [];
+  /* v2.5.0 双数据层（需求二/三）：水工建筑物 = 独立数据文件 data_buildings.js + 独立 store 键
+   * delta_bld + 独立 id 空间（载入时统一加 "bld:" 前缀）。
+   * 设备层（records / DELTA / data.js）这一路的代码路径一行未动 —— 需求四明确「原来感知设备
+   * 导入导出功能保持不变」，所以分层只做「新增一路」，不改「原有那路」。 */
+  let BASE_BLD = [], DELTA_BLD = { added: [], updated: {}, deleted: [] }, recordsBld = [];
+  const LAYER_DEV = "dev", LAYER_BLD = "bld", BLD_PREFIX = "bld:";
+  const LAYERS = [
+    { key: LAYER_DEV, label: "感知设备", icon: "📡", sub: "监控点 / 摄像机" },
+    { key: LAYER_BLD, label: "水工建筑物", icon: "🏗️", sub: "闸·桥·涵洞等，含命名地点" }
+  ];
+  const isBld = (r) => !!r && r.layer === LAYER_BLD;
+  const bldIdOf = (raw) => { const s = String(raw == null ? "" : raw); return s.indexOf(BLD_PREFIX) === 0 ? s : BLD_PREFIX + s; };
+  const rawIdOf = (id) => String(id == null ? "" : id).replace(new RegExp("^" + BLD_PREFIX), "");
+  const layerLabel = (r) => isBld(r) ? "水工建筑物" : "感知设备";
+  // 按 id 在「两层合并视图」里找对象（设备优先，但两层 id 空间已被前缀隔离，不会串）
+  function findRec(id) { return records.find((x) => x.id === id) || recordsBld.find((x) => x.id === id) || null; }
+  // 非筛选场景（经纬度搜索建议、AI 建卡候选等）要同时给两层对象；筛选/地图渲染则严格按「对象类别」走 shownRecords()
+  function shownRecordsDefault() { return records.concat(recordsBld); }
+  function layerOn(k) { return Array.isArray(filter.layers) && filter.layers.length ? filter.layers.includes(k) : k === LAYER_DEV; }
+  function shownRecords() {
+    const out = [];
+    if (layerOn(LAYER_BLD)) out.push.apply(out, recordsBld);   // 建筑物在下层（基础底图）
+    if (layerOn(LAYER_DEV)) out.push.apply(out, records);      // 设备在上层
+    return out;
+  }
+  let map, layerGroup, overlayGroup;
+  let filterCircle = null; // 筛选命中绿色虚线圆圈（v2.4.4 与古建端统一）
+  const filterActive = () => !!(filter.office.length || filter.btype.length || (filter.q && filter.q.trim()) || (filter.photo && filter.photo.mode !== "all")
+    || (filter.btypeBld || []).length || (filter.officeBld || []).length || (filter.mgmtBld || []).length || (filter.kindBld || []).length);
+  let vecLayer = null, cvaLayer = null, imgLayer = null, ciaLayer = null, basemapOn = false, layerType = "vec";
+  let lastCenter = null, myLoc = null, myLocMarker = null;
+  let measureMode = false, measurePts = [], measureLine = null;
+  let nearbyCenter = null, nearbyRadius = null, nearbyCircle = null, nearbyBtypes = [], nearbyBtypesBld = [];
+  const DEFAULT_CENTER = [40.30876, 116.61107]; // 明珠水库所 质心
+  const DEFAULT_ZOOM = 12;
+  /* filter.layers = 对象类别选择器（需求四-b）：默认只勾「感知设备」，水工建筑物默认不勾。
+   * filter.* = 感知设备口径；filter.*Bld = 水工建筑物口径（两层字段语义不同，各用各的，
+   * 避免水利 office=管理所 与感知 office=管理处 两套口径混在同一个下拉里串味）。 */
+  const filter = {
+    layers: [LAYER_DEV], office: [], mgmt: [], btype: [], subsys: [], midcat: [], subcat: [], trans: [], q: "", photo: { mode: "all", min: 0 },
+    btypeBld: [], officeBld: [], mgmtBld: [], kindBld: []
+  };
+  // 周边统计半径（Q6 用户口径：km 为单位、用户填入、默认 0.5km；内部计算仍用米）
+  let spatialRadiusKm = 0.5;
+  let pickMode = false, pendingLatLng = null, editId = null, formPhotos = [];
+  let coordResult = null, pickForCoord = false;   // 获取经纬度：地图点选回填
+  // 批量导入缓冲（原生逐文件回调）
+  let pendingBatch = { photos: [], sheets: [] };
+  const BATCH_STATE = { active: false, kind: null };
+  function b64ToDataUrl(name, b64) {
+    const l = (name || "").toLowerCase();
+    let mime = "image/jpeg";
+    if (l.endsWith(".png")) mime = "image/png";
+    else if (l.endsWith(".gif")) mime = "image/gif";
+    else if (l.endsWith(".webp")) mime = "image/webp";
+    else if (l.endsWith(".bmp")) mime = "image/bmp";
+    return "data:" + mime + ";base64," + b64;
+  }
+
+  // ---------- 超大文件 / 网络辅助 ----------
+  // 网络信息：是否 WiFi、是否在线、连接类型
+  function netInfo() {
+    const c = (navigator.connection || navigator.mozConnection || navigator.webkitConnection || {});
+    const type = c.type || c.effectiveType || "";
+    return {
+      online: navigator.onLine !== false,
+      type: type,
+      wifi: type === "wifi",
+      meteredHint: (type && type !== "wifi" && type !== "") // 非 wifi 视为可能走流量
+    };
+  }
+  // v2.4.9：大文件确认（尺寸驱动）
+  //  · 本地导入导出不消耗流量 → 不再提示流量
+  //  · 文件较小（< BIG_TRANSFER）或无尺寸信息 → 直接放行，不弹窗
+  //  · 文件较大 → 标题「操作提示」，内容「文件大小为 X，耗时较长，是否继续？」
+  const BIG_TRANSFER = 50 * 1048576; // 50MB：超过才提示耗时
+  function fmtSizeBytes(b) {
+    const n = Number(b) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + "GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + "MB";
+    if (n >= 1024) return Math.round(n / 1024) + "KB";
+    return n + "B";
+  }
+  function confirmLargeTransfer(title, sizeBytes) {
+    const size = Number(sizeBytes) || 0;
+    return new Promise((resolve) => {
+      if (!size || size < BIG_TRANSFER) return resolve(true); // 小文件/未知大小：不打扰
+      const html = `<div class="hint">文件大小为 <b>${fmtSizeBytes(size)}</b>，耗时较长，是否继续？</div>`;
+      openModal("操作提示", html, `<button class="btn ghost" id="ltCancel">取消</button><button class="btn primary" id="ltGo">继续</button>`);
+      el("ltCancel").onclick = () => { closeModal(); resolve(false); };
+      el("ltGo").onclick = () => { closeModal(); resolve(true); };
+    });
+  }
+  // 压缩包体积预检（item 1 根因：1.7G 直接 OOM/死机）：移动端 WebView 内存有限，整包加载必崩
+  // 返回 true 表示已拦截（弹窗引导分卷），调用方应 return；false 表示可继续
+  function zipSizeRefuse(f) {
+    const HARD = 1200 * 1048576; // 1.2GB：超过此值手机 WebView 几乎必然崩溃
+    if (f.size > HARD) {
+      BATCH_STATE.active = false;
+      const mb = Math.round(f.size / 1048576), gb = (f.size / 1073741824).toFixed(2);
+      openModal("压缩包过大，无法导入",
+        `<div class="hint" style="color:#e74c3c">⚠️ 压缩包约 <b>${gb} GB（${mb} MB）</b>，已超过移动端安全上限（建议 ≤500MB）。<br>手机 WebView 内存有限，整包加载会直接崩溃 / 死机。</div>
+         <div class="hint">解决方法：<b>在电脑上按机构拆成多个 ≤500MB 的 zip</b> 后逐个导入；或用「手机文件夹」分批选照片。</div>`,
+        `<button class="btn primary" id="zOk">我知道了</button>`);
+      el("zOk").onclick = closeModal;
+      return true;
+    }
+    return false;
+  }
+  // 内容哈希（用于内容去重，item 6）：dataUrl(base64) → sha256 十六进制
+  async function shaHexOfB64(b64) {
+    try { return await IO.sha256Hex(IO.b64ToBytes(b64)); } catch (e) { return "err:" + (b64 || "").length; }
+  }
+
+  // 导入续传检查点（item 1/2：中断后可继续，不丢进度）
+  const IMPORT_CP = { active: false, kind: null, received: 0, startedAt: 0 };
+  function importCpStart(kind) {
+    IMPORT_CP.active = true; IMPORT_CP.kind = kind; IMPORT_CP.received = 0; IMPORT_CP.startedAt = Date.now();
+  }
+  function importCpTouch() { IMPORT_CP.received++; }
+  function importCpEnd() { IMPORT_CP.active = false; IMPORT_CP.kind = null; IMPORT_CP.received = 0; }
+  // 若上次导入被中断（active 仍为 true 且未超过 24h），提示用户
+  function importCpResumePrompt(kind) {
+    return new Promise((resolve) => {
+      if (!IMPORT_CP.active) return resolve(false);
+      const mins = Math.round((Date.now() - IMPORT_CP.startedAt) / 60000);
+      if (mins > 1440) { importCpEnd(); return resolve(false); }
+      const html = `<div class="hint">检测到上一次「${IMPORT_CP.kind === "photos" ? "照片" : "监控点"}」导入可能未正常完成（已接收 ${IMPORT_CP.received} 个文件，约 ${mins} 分钟前）。</div>
+        <div class="hint">建议「继续」重新选择来源并按需追加；若已无需，请选择「放弃」。</div>`;
+      openModal("导入续传", html, `<button class="btn ghost" id="cpDrop">放弃上次</button><button class="btn primary" id="cpGo">继续</button>`);
+      el("cpDrop").onclick = () => { importCpEnd(); closeModal(); resolve(false); };
+      el("cpGo").onclick = () => { closeModal(); resolve(true); };
+    });
+  }
+
+  // ---------- DOM ----------
+  const $ = (s) => document.querySelector(s);
+  const el = (id) => document.getElementById(id);
+  function toast(msg) {
+    const t = el("toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 2200);
+  }
+  function openModal(title, bodyHtml, footHtml) {
+    el("modalTitle").textContent = title;
+    el("modalBody").innerHTML = bodyHtml;
+    el("modalFoot").innerHTML = footHtml || "";
+    el("modal").classList.add("open");
+    el("modalMask").classList.add("show");
+  }
+  function closeModal() {
+    el("modal").classList.remove("open");
+    el("modalMask").classList.remove("show");
+  }
+  // 全屏"执行中，请稍后"遮罩：导入/导出/压缩/大批量操作时调用，避免误以为卡死
+  let _busyEl;
+  function busy(msg) {
+    if (!_busyEl) {
+      _busyEl = document.createElement("div");
+      _busyEl.id = "busy";
+      _busyEl.innerHTML = `<div class="busy-box"><div class="spinner"></div><div class="busy-msg"></div></div>`;
+      document.body.appendChild(_busyEl);
+    }
+    _busyEl.querySelector(".busy-msg").textContent = msg || "执行中，请稍后…";
+    _busyEl.classList.add("show");
+  }
+  function hideBusy() { if (_busyEl) _busyEl.classList.remove("show"); }
+  // 文件选择器：保留对临时 <input> 的引用，避免 Android WebView 在用户选完文件前将其 GC
+  // （局部变量 input 在 inp.click() 后超出作用域被回收 → onchange 永不触发 → 点击 csv/zip 等"无反应"）
+  let _pendingFileInput = null;
+  function pickFiles(opts) {
+    try { if (_pendingFileInput && _pendingFileInput.parentNode) _pendingFileInput.parentNode.removeChild(_pendingFileInput); } catch (e) {}
+    const inp = document.createElement("input");
+    inp.type = "file";
+    if (opts.accept) inp.accept = opts.accept;
+    if (opts.multiple) inp.multiple = true;
+    if (opts.webkitdirectory) inp.webkitdirectory = true;
+    inp.style.position = "fixed"; inp.style.left = "-9999px"; inp.style.top = "0";
+    const onPick = opts.onPick;
+    // 非静默失败看门狗：选择器若确实没弹出（无失焦且无回调），2.5s 后 toast 引导，绝不"点了没反应"
+    let chooserOpened = false;
+    const onBlur = () => { chooserOpened = true; };
+    const watchdog = setTimeout(() => {
+      window.removeEventListener("blur", onBlur);
+      if (!chooserOpened) toast("未弹出文件选择器？请检查系统「文件/存储」权限，或改用「批量导入」来源");
+    }, 2500);
+    window.addEventListener("blur", onBlur);
+    inp.onchange = () => {
+      clearTimeout(watchdog); window.removeEventListener("blur", onBlur);
+      const files = inp.files ? Array.from(inp.files) : [];
+      try { if (inp.parentNode) inp.parentNode.removeChild(inp); } catch (e) {}
+      _pendingFileInput = null;
+      if (onPick) onPick(files);
+    };
+    // 先挂到 DOM 再点击：部分 WebView 要求 input 在文档中才会弹出系统选择器，且挂 DOM 可防止被 GC
+    document.body.appendChild(inp);
+    _pendingFileInput = inp;
+    inp.click();
+  }
+  // 原生返回键 / Esc：逐级关闭 弹窗 > 抽屉 > 测距 > 列表
+  function back() {
+    if (el("modal").classList.contains("open")) { closeModal(); return true; }
+    if (el("drawer").classList.contains("open")) { closeDrawer(); return true; }
+    if (measureMode) { exitMeasure(); return true; }
+    if (el("listbar").classList.contains("open")) { el("listbar").classList.remove("open"); return true; }
+    if (el("drawer").classList.contains("open")) { closeDrawer(); return true; }
+    return false;
+  }
+  // 三击地图任意处：关闭任何卡住的弹窗/列表，并打开主菜单（解决"找不到主菜单"）
+  function tripleTapMenu() {
+    closeModal();
+    if (el("listbar").classList.contains("open")) el("listbar").classList.remove("open");
+    el("drawer").classList.add("open"); el("mask").classList.add("show"); applyHiddenMenus(); applyHiddenMenus();
+    toast("已打开主菜单");
+  }
+
+  // ---------- 数据 ----------
+  // v2.5.0 双数据层：建筑物层独立文件、独立 store 键；载入时统一给 id 加 "bld:" 前缀
+  async function loadBuildings() {
+    let json = null;
+    if (window.__DATA_BLD__ && window.__DATA_BLD__.features) {
+      json = window.__DATA_BLD__;                       // 离线/APK 场景：内嵌数据
+    } else {
+      try { const res = await fetch("data_buildings.json"); if (res.ok) json = await res.json(); } catch (e) { json = null; }
+    }
+    BASE_BLD = ((json && json.features) || []).map((r) => Object.assign({}, r, { id: bldIdOf(r.id), layer: LAYER_BLD }));
+    try { DELTA_BLD = await Store.bld.get(); } catch (e) { DELTA_BLD = { added: [], updated: {}, deleted: [] }; }
+  }
+  async function load() {
+    let json;
+    if (window.__DATA__ && window.__DATA__.features) {
+      json = window.__DATA__;            // 离线/APK 场景：内嵌数据，免 fetch
+    } else {
+      const res = await fetch("data.json");
+      json = await res.json();
+    }
+    BASE = json.features || [];
+    DELTA = await Store.get();
+    await loadBuildings();
+    applyDims();
+    merge();
+    render();
+    pruneFilter();   // v2.5.0 需求七：数据与名单就绪后，清掉上次会话残留的失效筛选值
+  }
+  // 单层合并（设备层/建筑物层同一套逻辑，只是 base 与 delta 来源不同）
+  function mergeLayer(base, delta, layer) {
+    const del = new Set(delta.deleted || []);
+    const out = [];
+    for (const r of base) {
+      if (del.has(r.id)) continue;
+      const up = delta.updated[r.id];
+      out.push(Object.assign({}, up ? Object.assign({}, r, up) : r, { layer: layer }));
+    }
+    for (const a of (delta.added || [])) out.push(Object.assign({}, a, { layer: layer }));
+    return out;
+  }
+  function merge() {
+    records = mergeLayer(BASE, DELTA, LAYER_DEV);
+    recordsBld = mergeLayer(BASE_BLD, DELTA_BLD, LAYER_BLD);
+    applyDims();
+  }
+  // ---------- 组织层级配置（v2.4 五级化：局/管理处/所/站/段 · 与水利端同构同步）----------
+  const BASE_OFFICES = ["地下水源所", "温汤所", "云龙山所", "翠屏山所", "埝湾所", "水库所", "北台峪所", "柳林庄所", "清源河所"];
+  const BASE_OFFICES_SET = new Set(BASE_OFFICES);
+  /* v2.5.0 需求七：管理处基础名单（与「清源灌区管理处 IP 信息统计表」的 9 所同源同属）。
+   * 作用：① 让「管理处」层级也有和「所」一样的「基础名单（锁定）」语义，不再只有「默认/自定义/数据派生」三态；
+   *       ② 筛选侧与设置侧的名单顺序统一为「默认 → 基础名单 → 其余」，两侧逐项对应、肉眼可核。 */
+  const BASE_MGMTS = ["清源灌区管理处"];
+  const BASE_MGMTS_SET = new Set(BASE_MGMTS);
+  const DEFAULT_ORG = { bureau: "水利工程管理中心", mgmt: "清源灌区管理处", office: "水库所", station: "", section: "" };
+  const ORG_LEVELS = [
+    { key: "bureau", label: "局", field: "bureau" },
+    { key: "mgmt", label: "管理处", field: "mgmt" },
+    { key: "office", label: "所", field: "office" },
+    { key: "station", label: "站", field: "station" },
+    { key: "section", label: "段", field: "section" }
+  ];
+  const ORGCFG_KEY = "shipin_orgcfg_v2", ORGCFG_LEGACY_KEY = "shipin_offcfg_v1";
+  let ORGCFG = loadCFG();
+  function loadCFG() {
+    // v2.4：读新键；旧版 shipin_offcfg_v1 做一次迁移兜底
+    let o = {};
+    try { o = JSON.parse(localStorage.getItem(ORGCFG_KEY) || "null") || {}; } catch (e) { o = {}; }
+    if (!o || (!o.officeExtra && !o.stations && !o.defaults)) {
+      try { o = JSON.parse(localStorage.getItem(ORGCFG_LEGACY_KEY) || "null") || o; } catch (e) {}
+    }
+    return {
+      bureaus: Array.isArray(o.bureaus) ? o.bureaus : [],
+      mgmts: Array.isArray(o.mgmts) ? o.mgmts : [],
+      officeExtra: Array.isArray(o.officeExtra) ? o.officeExtra : [],
+      stations: Array.isArray(o.stations) ? o.stations : [],
+      sections: Array.isArray(o.sections) ? o.sections : [],
+      btypeExtra: Array.isArray(o.btypeExtra) ? o.btypeExtra : [],
+      subsysExtra: Array.isArray(o.subsysExtra) ? o.subsysExtra : [],
+      midcatExtra: Array.isArray(o.midcatExtra) ? o.midcatExtra : [],
+      subcatExtra: Array.isArray(o.subcatExtra) ? o.subcatExtra : [],
+      transExtra: Array.isArray(o.transExtra) ? o.transExtra : [],
+      defaults: Object.assign({}, DEFAULT_ORG, (o.defaults && typeof o.defaults === "object") ? o.defaults : {})
+    };
+  }
+  function saveCFG() { try { localStorage.setItem(ORGCFG_KEY, JSON.stringify(ORGCFG)); } catch (e) {} }
+  function orgDefault(key) { return (ORGCFG.defaults && ORGCFG.defaults[key]) || DEFAULT_ORG[key] || ""; }
+  function stationOffice(name) { const m = (ORGCFG.stations || []).find((s) => s.name === name); return m ? m.office : ""; }
+  // 管理所名称统一（与水利端一致）：去「管理」两字 + 清源河/水库特例
+    // ---------- v2.4.9 管理所智能识别：9 所标准名单模糊匹配 + 清源河/水库特例 + 「站」归为所的下一级 ----------
+  function smartOffice(name) {
+    const raw = String(name == null ? "" : name).trim();
+    if (!raw) return { office: "", station: "", changed: false };
+    const list = (typeof BASE_OFFICES !== "undefined" && BASE_OFFICES.length) ? BASE_OFFICES : [];
+    const SET = (typeof BASE_OFFICES_SET !== "undefined" && BASE_OFFICES_SET.has) ? BASE_OFFICES_SET : new Set(list);
+    if (SET.has(raw)) return { office: raw, station: "", changed: false };
+    // ② 含标准所名（如「清源河所一号站」「明珠水库所」）→ 所 + 剩余部分若为站则下沉
+    for (let i = 0; i < list.length; i++) {
+      if (raw.indexOf(list[i]) >= 0) {
+        const st = raw.replace(list[i], "").trim();
+        return { office: list[i], station: /站$/.test(st) ? st : "", changed: list[i] !== raw };
+      }
+    }
+    // ③ 站不是所：以「站」结尾且不含标准所名 → 归为站（所留空），不进所名单
+    if (/站$/.test(raw) || /管理站$/.test(raw)) return { office: "", station: raw, changed: true };
+    // ④ 去噪声后模糊匹配：温汤管理所→温汤、清源河总干渠管理所→清源河
+    const core = raw.replace(/管理所|管理处|管理|总干渠|所|站/g, "");
+    for (let i = 0; i < list.length; i++) {
+      const oc = list[i].replace(/所$/, "");
+      if (core && (core === oc || core.indexOf(oc) >= 0 || oc.indexOf(core) >= 0)) {
+        return { office: list[i], station: "", changed: list[i] !== raw };
+      }
+    }
+    const out = raw.replace(/管理所/g, "所").replace(/管理处/g, "处");
+    return { office: out, station: "", changed: out !== raw };
+  }
+  function normOffice(name) { return smartOffice(name).office; }
+  // ---------- /v2.4.9 管理所智能识别 ----------
+
+// ---------- /v2.4.9 管理所智能识别 ----------
+
+  // 记录取某层级值：无值时回填默认（局/管理处/所），站/段无默认返回原值
+  function orgVal(r, key) {
+    if (!r) return orgDefault(key);
+    const v = r[key];
+    return (v == null || v === "") ? ((key === "bureau" || key === "mgmt" || key === "office") ? orgDefault(key) : "") : v;
+  }
+  /* v2.5.0 需求七：机构名单统一排序 —— 默认值 → 基础名单 → 其余（字面序）。
+   * 筛选面板 chip、设置页列表、表单下拉三处共用同一顺序，
+   * 「筛选里看到的处所和设置里看到的对不上」这一观感从根上消除。 */
+  function orderDims(vals, defaults, bases) {
+    const def = ([].concat(defaults || [])).filter(Boolean);
+    const base = (bases || []).filter(Boolean).filter((v) => def.indexOf(v) < 0);
+    const rest = uniq((vals || []).filter(Boolean)).filter((v) => def.indexOf(v) < 0 && base.indexOf(v) < 0);
+    return def.concat(base, rest);
+  }
+  /* v2.5.0 需求七：剔除「幽灵筛选值」。
+   * 在设置页删掉/改掉某个管理处后，筛选里残留的旧勾选既不会渲染成 chip、又一直在后台过滤，
+   * 表现为「设置里已经没有这个处了，筛选却怎么都筛不出东西」。打开筛选/机构管理前先清一遍。
+   * 设备层与建筑物层两套条件各清各的（两层字段同名不同义，不能混用同一份维度）。 */
+  function pruneFilter() {
+    let dropped = 0;
+    const dev = { bureau: () => DIMS.bureaus, mgmt: () => DIMS.mgmts, office: () => DIMS.offices, station: () => DIMS.stations,
+      btype: () => DIMS.btypes, subsys: () => DIMS.subsys, midcat: () => DIMS.midcat, subcat: () => DIMS.subcat, trans: () => DIMS.trans };
+    Object.keys(dev).forEach((k) => {
+      const all = dev[k]() || [];
+      const arr = Array.isArray(filter[k]) ? filter[k] : [];
+      const kept = arr.filter((v) => all.includes(v));
+      dropped += arr.length - kept.length;
+      filter[k] = kept;
+    });
+    const bld = { mgmtBld: () => DIMS.mgmtsBld, officeBld: () => DIMS.officesBld, btypeBld: () => DIMS.btypesBld, kindBld: () => DIMS.kindsBld };
+    Object.keys(bld).forEach((k) => {
+      const all = bld[k]() || [];
+      const arr = Array.isArray(filter[k]) ? filter[k] : [];
+      const kept = arr.filter((v) => all.includes(v));
+      dropped += arr.length - kept.length;
+      filter[k] = kept;
+    });
+    return dropped;
+  }
+  function applyDims() {
+    const cfgB = (ORGCFG.bureaus || []).filter(Boolean);
+    DIMS.bureaus = orderDims([...records.map((r) => orgVal(r, "bureau")), ...cfgB], [orgDefault("bureau")], []);
+    const cfgM = (ORGCFG.mgmts || []).filter(Boolean);
+    DIMS.mgmts = orderDims([...records.map((r) => orgVal(r, "mgmt")), ...cfgM], [orgDefault("mgmt")], BASE_MGMTS);
+    const cfgOff = (ORGCFG.officeExtra || []).map((o) => normOffice(o)).filter(Boolean);
+    DIMS.offices = orderDims([...records.map((r) => normOffice(orgVal(r, "office"))), ...cfgOff], orgDefault("office"), BASE_OFFICES);
+    const cfgSt = (ORGCFG.stations || []).map((s) => s.name).filter(Boolean);
+    DIMS.stations = uniq([...records.map((r) => r.station).filter(Boolean), ...cfgSt]);
+    const cfgSec = (ORGCFG.sections || []).filter(Boolean);
+    DIMS.sections = uniq([...records.map((r) => r.section).filter(Boolean), ...cfgSec]);
+    const cfgBt = (ORGCFG.btypeExtra || []).filter(Boolean);
+    DIMS.btypes = uniq([...records.map((r) => r.btype).filter(Boolean), ...cfgBt]);
+    // v2.4 感知分类维度：感知子系统/中类/子类/信息传输方式
+    DIMS.subsys = uniq([...records.map((r) => r.subsys).filter(Boolean), ...(ORGCFG.subsysExtra || [])]);
+    DIMS.midcat = uniq([...records.map((r) => r.midcat).filter(Boolean), ...(ORGCFG.midcatExtra || [])]);
+    DIMS.subcat = uniq([...records.map((r) => r.subcat).filter(Boolean), ...(ORGCFG.subcatExtra || [])]);
+    DIMS.trans = uniq([...records.map((r) => r.trans).filter(Boolean), ...(ORGCFG.transExtra || [])]);
+    // v2.5.0 双数据层：水工建筑物层自有维度（水利口径：office=管理所、station=段、mgmt=管理处）
+    // 与设备层刻意分开成 4 个独立数组，杜绝两套同名不同义的字段混进同一个下拉
+    // 顺序同样走 orderDims：与「筛选 → 水工建筑物」区块的 chip 顺序逐项对应（需求七）
+    DIMS.btypesBld = uniq(recordsBld.filter((r) => (r.kind || "building") !== "place").map((r) => r.btype).filter(Boolean));
+    DIMS.officesBld = orderDims(recordsBld.map((r) => normOffice(orgVal(r, "office"))), [], BASE_OFFICES);
+    DIMS.mgmtsBld = orderDims(recordsBld.map((r) => orgVal(r, "mgmt")), [orgDefault("mgmt")], BASE_MGMTS);
+    DIMS.kindsBld = uniq(recordsBld.map((r) => r.kind || "building").filter(Boolean));
+    DIMS.stationsBld = uniq(recordsBld.map((r) => r.station).filter(Boolean));
+    DIMS.sectionsBld = uniq(recordsBld.map((r) => r.section).filter(Boolean));
+    // 注意：这里**不**调用 pruneFilter()。applyDims() 在 load() 里 records/recordsBld 尚为空时也会被调，
+    // 那时维度只有自定义项，会把用户上次保存的筛选误清空。prune 统一放在
+    // load() 数据就绪后 与 openFilter()/openOrgManager() 打开时执行。
+  }
+  const DIMS = { bureaus: [], mgmts: [], offices: [], stations: [], sections: [], btypes: [], subsys: [], midcat: [], subcat: [], trans: [],
+    btypesBld: [], officesBld: [], mgmtsBld: [], kindsBld: [], stationsBld: [], sectionsBld: [] };
+  function uniq(a) { return [...new Set(a)].sort(); }
+
+  function passFilter(r) {
+    // 对象类别（需求四-b）：两层各自只跑自己那套条件；未勾选的层直接不参与
+    if (isBld(r)) {
+      if (!layerOn(LAYER_BLD)) return false;
+      if (filter.mgmtBld.length && !filter.mgmtBld.includes(orgVal(r, "mgmt"))) return false;
+      if (filter.officeBld.length && !filter.officeBld.includes(normOffice(orgVal(r, "office")))) return false;
+      if (filter.btypeBld.length && !filter.btypeBld.includes(r.btype)) return false;
+      if (filter.kindBld.length && !filter.kindBld.includes(r.kind || "building")) return false;
+      if (filter.photo && filter.photo.mode !== "all") {
+        const cnt = (r.photos || []).length;
+        if (filter.photo.mode === "has" && cnt <= 0) return false;
+        if (filter.photo.mode === "none" && cnt > 0) return false;
+        if (filter.photo.mode === "min" && cnt < (filter.photo.min || 0)) return false;
+      }
+      if (filter.q && !matchKeyword(r, filter.q)) return false;
+      if (nearbyCenter && nearbyRadius != null) {
+        if (haversine(nearbyCenter, { lat: r.lat, lon: r.lon }) > nearbyRadius) return false;
+        if (nearbyBtypesBld.length && !nearbyBtypesBld.includes(r.btype)) return false;
+      }
+      return true;
+    }
+    if (!layerOn(LAYER_DEV)) return false;
+    if (filter.office.length && !filter.office.includes(normOffice(orgVal(r, "office")))) return false;
+    if (filter.mgmt.length && !filter.mgmt.includes(orgVal(r, "mgmt"))) return false;
+    if (filter.btype.length && !filter.btype.includes(r.btype)) return false;
+    if (filter.subsys.length && !filter.subsys.includes(r.subsys)) return false;
+    if (filter.midcat.length && !filter.midcat.includes(r.midcat)) return false;
+    if (filter.subcat.length && !filter.subcat.includes(r.subcat)) return false;
+    if (filter.trans.length && !filter.trans.includes(r.trans)) return false;
+    if (filter.photo && filter.photo.mode !== "all") {
+      const cnt = (r.photos || []).length;
+      if (filter.photo.mode === "has" && cnt <= 0) return false;
+      if (filter.photo.mode === "none" && cnt > 0) return false;
+      if (filter.photo.mode === "min" && cnt < (filter.photo.min || 0)) return false;
+    }
+    if (filter.q && !matchKeyword(r, filter.q)) return false;
+    if (nearbyCenter && nearbyRadius != null) {
+      if (haversine(nearbyCenter, { lat: r.lat, lon: r.lon }) > nearbyRadius) return false;
+      if (nearbyBtypes.length && !nearbyBtypes.includes(r.btype)) return false;
+    }
+    return true;
+  }
+  // 关键词匹配（查询）：两层共用一个查询框，但各自匹配自己那套字段
+  function matchKeyword(r, q) {
+    const kw = String(q || "").trim().toLowerCase();
+    if (!kw) return true;
+    if (isBld(r)) {
+      return [r.name, r.office, r.station, r.btype, r.mgmt, r.description].filter(Boolean).join(" ").toLowerCase().includes(kw);
+    }
+    const wide = [r.name, r.office, normOffice(r.office), r.station, r.btype, r.subsys, r.midcat, r.subcat, r.trans].filter(Boolean).join(" ").toLowerCase();
+    if (wide.includes(kw)) return true;
+    // 兼容旧口径：顶栏查询原按「名称+机构+库渠+类型」无缝拼接匹配（跨字段连写关键词也能命中），此处保留
+    return `${r.name}${r.office}${r.station}${r.btype}`.toLowerCase().includes(kw);
+  }
+
+  // ---------- UI 状态持久化 ----------
+  function loadUI() {
+    const s = Store.ui.get();
+    if (s) {
+      filter.office = Array.isArray(s.office) ? s.office : [];
+      filter.mgmt = Array.isArray(s.mgmt) ? s.mgmt : [];
+      filter.btype = Array.isArray(s.btype) ? s.btype : [];
+      filter.subsys = Array.isArray(s.subsys) ? s.subsys : [];
+      filter.midcat = Array.isArray(s.midcat) ? s.midcat : [];
+      filter.subcat = Array.isArray(s.subcat) ? s.subcat : [];
+      filter.trans = Array.isArray(s.trans) ? s.trans : [];
+      // v2.5.0 对象类别：老用户的 UI 快照里没有 layers 字段 → 必须回落成「感知设备」，
+      // 否则升级后地图会莫名变空（默认只勾感知设备，与需求四-b 一致）
+      filter.layers = (Array.isArray(s.layers) ? s.layers : []).filter((k) => k === LAYER_DEV || k === LAYER_BLD);
+      if (!filter.layers.length) filter.layers = [LAYER_DEV];
+      filter.btypeBld = Array.isArray(s.btypeBld) ? s.btypeBld : [];
+      filter.officeBld = Array.isArray(s.officeBld) ? s.officeBld : [];
+      filter.mgmtBld = Array.isArray(s.mgmtBld) ? s.mgmtBld : [];
+      filter.kindBld = Array.isArray(s.kindBld) ? s.kindBld : [];
+      spatialRadiusKm = (typeof s.spatialKm === "number" && s.spatialKm > 0) ? s.spatialKm : 0.5;
+      basemapOn = s.basemap === true;
+      layerType = (s.layer === "img") ? "img" : "vec";
+      lastCenter = s.center || null;
+    } else {
+      // 首次打开：默认「水库所」(非全部)，仅载该所监控点→开图更快不卡顿；不加载底图
+      filter.mgmt = [orgDefault("mgmt")];
+      filter.office = (Array.isArray(orgDefault("office")) ? orgDefault("office") : [orgDefault("office")]).filter(Boolean);
+      filter.layers = [LAYER_DEV];
+      basemapOn = false;
+      layerType = "vec";
+      lastCenter = null;
+    }
+  }
+  function saveUI() {
+    Store.ui.set({ office: filter.office, mgmt: filter.mgmt, btype: filter.btype, subsys: filter.subsys, midcat: filter.midcat, subcat: filter.subcat, trans: filter.trans,
+      layers: filter.layers, btypeBld: filter.btypeBld, officeBld: filter.officeBld, mgmtBld: filter.mgmtBld, kindBld: filter.kindBld, spatialKm: spatialRadiusKm,
+      basemap: basemapOn, layer: layerType, center: lastCenter });
+  }
+
+  // ---------- 地图 ----------
+  function initMap() {
+    // attributionControl 去掉默认「Leaflet」外链（https://leafletjs.com）：离线/弱网点该链接会 ERR_CONNECTION_TIMED_OUT；本地资源已离线化
+    map = L.map("map", { zoomControl: true, attributionControl: L.control.attribution({ prefix: false }) }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+    const baseOpts = { maxZoom: 18, subdomains: "0123456789" };
+    const tk = (lyr) => `https://t0.tianditu.gov.cn/${lyr}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${lyr}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TIANDITU}`;
+    vecLayer = L.tileLayer(tk("vec"), baseOpts);
+    cvaLayer = L.tileLayer(tk("cva"), baseOpts);
+    imgLayer = L.tileLayer(tk("img"), baseOpts);
+    ciaLayer = L.tileLayer(tk("cia"), baseOpts);
+    layerGroup = L.layerGroup().addTo(map);
+    overlayGroup = L.layerGroup().addTo(map); // 测距 / 周边 等叠加层，render() 不清空
+    map.on("popupopen", onPopupOpen);
+    map.on("click", (e) => {
+      if (measureMode) { addMeasurePt(e.latlng); return; }
+      if (pickMode) {
+        pendingLatLng = e.latlng;
+        if (pickForCoord) {
+          // 获取经纬度：地图点选 → 回填并重新打开弹窗
+          pickForCoord = false; togglePick(false);
+          coordResult = { lat: e.latlng.lat, lon: e.latlng.lng };
+          getCoord();
+          return;
+        }
+        $("#fLat").value = e.latlng.lat.toFixed(6);
+        $("#fLon").value = e.latlng.lng.toFixed(6);
+        toast("已选择坐标：" + e.latlng.lat.toFixed(5) + ", " + e.latlng.lng.toFixed(5));
+        togglePick(false);
+      }
+    });
+    map.on("contextmenu", (e) => {
+      if (measureMode || pickMode) return;
+      if (e && e.originalEvent) e.originalEvent.preventDefault();
+      openCtxMenu(e.originalEvent.clientX, e.originalEvent.clientY, mapCtxItems(e.latlng));
+    });
+    map.on("moveend", () => {
+      lastCenter = { lat: map.getCenter().lat, lng: map.getCenter().lng, zoom: map.getZoom() };
+      saveUI();
+    });
+  }
+  function addBasemap() {
+    [vecLayer, cvaLayer, imgLayer, ciaLayer].forEach((L0) => { if (map.hasLayer(L0)) map.removeLayer(L0); });
+    if (basemapOn) {
+      if (layerType === "img") { imgLayer.addTo(map); ciaLayer.addTo(map); }
+      else { vecLayer.addTo(map); cvaLayer.addTo(map); }
+    }
+    updateBaseBtn(); updateLayerBtn();
+  }
+  // v2.4.3 密钥替换后重建 4 个底图层 URL（token 改了 → 立即生效，无需刷页面）
+  function refreshBasemap() {
+    [vecLayer, cvaLayer, imgLayer, ciaLayer].forEach((L0) => { if (L0 && map.hasLayer(L0)) map.removeLayer(L0); });
+    vecLayer = L.tileLayer(tk("vec"), baseOpts);
+    cvaLayer = L.tileLayer(tk("cva"), baseOpts);
+    imgLayer = L.tileLayer(tk("img"), baseOpts);
+    ciaLayer = L.tileLayer(tk("cia"), baseOpts);
+    if (basemapOn) {
+      if (layerType === "img") { imgLayer.addTo(map); ciaLayer.addTo(map); }
+      else { vecLayer.addTo(map); cvaLayer.addTo(map); }
+    }
+  }
+  function setBasemap(on) { basemapOn = on; saveUI(); addBasemap(); toast(on ? "已开启底图" : "已关闭底图"); }
+  function setLayer(t) {
+    layerType = (t === "img") ? "img" : "vec";
+    saveUI();
+    if (basemapOn) addBasemap();
+    toast(layerType === "img" ? "影像地图" : "矢量地图");
+  }
+  function updateBaseBtn() {
+    const b = el("btnBase"); if (!b) return;
+    b.classList.toggle("active", basemapOn);
+    b.textContent = basemapOn ? "🗺" : "🚫";
+    b.title = basemapOn ? "关闭底图" : "开启底图";
+  }
+  function updateLayerBtn() {
+    const b = el("btnLayer"); if (!b) return;
+    b.textContent = layerType === "img" ? "影像" : "矢量";
+    b.title = "底图图源（点击打开底图选择）";
+    b.classList.toggle("active", basemapOn);
+  }
+  // 底图选择：矢量 / 影像 / 仅点位，清晰高亮当前选中
+  function openBasemap() {
+    const opts = [
+      { k: "vec", t: "矢量地图", s: "道路 / 注记清晰，适合日常巡查", on: basemapOn && layerType === "vec" },
+      { k: "img", t: "影像地图", s: "卫星影像，适合看地形地物", on: basemapOn && layerType === "img" },
+      { k: "off", t: "仅点位（省流量）", s: "不加载底图，仅显示采集点", on: !basemapOn }
+    ];
+    const html = opts.map((o) =>
+      `<div class="bm-opt ${o.on ? "on" : ""}" data-k="${o.k}">
+        <span class="bm-dot"></span>
+        <div class="bm-tx"><div class="bm-t">${o.t}</div><div class="bm-s">${o.s}</div></div>
+        <span class="bm-check">✓</span>
+      </div>`).join("");
+    openModal("底图选择", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+    el("modalBody").querySelectorAll(".bm-opt").forEach((node) => {
+      node.onclick = () => {
+        const k = node.dataset.k;
+        if (k === "off") basemapOn = false;
+        else { basemapOn = true; layerType = k; }
+        saveUI(); addBasemap(); updateBaseBtn(); updateLayerBtn();
+        openBasemap(); // 刷新选中态
+      };
+    });
+  }
+  function fitToShown() {
+    const b = layerGroup.getBounds();
+    if (b.isValid()) map.fitBounds(b.pad(0.12));
+    else map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+  }
+
+  function render() {
+    layerGroup.clearLayers();
+    if (filterCircle) { overlayGroup.removeLayer(filterCircle); filterCircle = null; }
+    const sel = shownRecords();
+    const filt = filterActive();
+    let n = 0;
+    for (const r of sel) {
+      if (!passFilter(r)) continue;
+      const lat = +r.lat, lon = +r.lon;
+      // 非法坐标（NaN/Infinity，常见于导入的线/面/无坐标要素）直接跳过，避免 Leaflet 抛错
+      if (!isFinite(lat) || !isFinite(lon)) continue;
+      n++;
+      const icon = isBld(r) ? (filt ? BLD_FILTER_MARKER : BLD_MARKER) : (filt ? FILTER_MARKER : MARKER);
+      const m = L.marker([lat, lon], { icon: icon }).bindPopup(popupHtml(r));
+      m._rid = r.id;
+      m.on("click", () => { if (measureMode) addMeasurePt({ lat: lat, lon: lon }); });
+      m.on("contextmenu", (e) => { if (e && e.originalEvent) { L.DomEvent.stop(e); e.originalEvent.preventDefault(); } openCtxMenu(e.originalEvent.clientX, e.originalEvent.clientY, ctxItemsFor(r)); });
+      layerGroup.addLayer(m);
+    }
+    // 周边搜索范围圈
+    if (nearbyCenter && nearbyRadius != null) {
+      if (nearbyCircle) overlayGroup.removeLayer(nearbyCircle);
+      nearbyCircle = L.circle([nearbyCenter.lat, nearbyCenter.lon], { radius: nearbyRadius, color: "#3da9fc", weight: 1.5, fillColor: "#3da9fc", fillOpacity: 0.08 }).addTo(overlayGroup);
+    }
+    el("listCnt") && (el("listCnt").textContent = `${n} / ${sel.length}`);
+    updateFilterBar();
+    renderList();
+  }
+  // 筛选状态条：实时显示命中监控点数，无筛选时隐藏
+  function updateFilterBar() {
+    const bar = el("filterBar"); if (!bar) return;
+    const rs = shownRecords().filter(passFilter);
+    if (filterActive()) {
+      el("fbCnt").textContent = rs.length;
+      bar.classList.add("show");
+    } else {
+      bar.classList.remove("show");
+    }
+  }
+  // v2.4.4 绿色虚线圆圈「刚刚好」圈住全部命中监控点，并把视野调到刚好完整显示该圆圈（与古建端同源一致）
+  // 算法：Ritter 最小包围圆（等距投影到米制平面）→ 比旧的「外接矩形质心 + 最远距离」半径更贴合，
+  // 收尾再做一次全点包含性校正，保证一个都不漏在圈外（沉默漏点是不可接受的）。
+  const FILTER_CIRCLE_COLOR = "#22c55e";   // 绿色虚线（与古建端统一）
+  function minEnclosingCircle(pts) {
+    const lat0 = pts[0][0] * Math.PI / 180;
+    const MPD_LAT = 110540, MPD_LON = 111320 * Math.cos(lat0);
+    const P = pts.map(([la, lo]) => [lo * MPD_LON, la * MPD_LAT]);
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    let q = P[0];
+    for (const p of P) if (dist(P[0], p) > dist(P[0], q)) q = p;
+    let r = P[0];
+    for (const p of P) if (dist(q, p) > dist(q, r)) r = p;
+    let cx = (q[0] + r[0]) / 2, cy = (q[1] + r[1]) / 2, rad = dist(q, r) / 2;
+    for (const p of P) {
+      const d = Math.hypot(p[0] - cx, p[1] - cy);
+      if (d > rad) {
+        const nr = (rad + d) / 2, k = (d - nr) / d;
+        cx += (p[0] - cx) * k; cy += (p[1] - cy) * k; rad = nr;
+      }
+    }
+    for (const p of P) rad = Math.max(rad, Math.hypot(p[0] - cx, p[1] - cy));
+    return { lat: cy / MPD_LAT, lon: cx / MPD_LON, radius: rad };
+  }
+  function drawFilterCircle(rs) {
+    if (filterCircle) { overlayGroup.removeLayer(filterCircle); filterCircle = null; }
+    const pts = rs.map((r) => [+r.lat, +r.lon]).filter((p) => isFinite(p[0]) && isFinite(p[1]));
+    if (pts.length < 1) return;
+    const style = { color: FILTER_CIRCLE_COLOR, weight: 2, dashArray: "8 6", fillColor: FILTER_CIRCLE_COLOR, fillOpacity: 0.07 };
+    if (pts.length === 1) {
+      const [lat, lon] = pts[0];
+      filterCircle = L.circle([lat, lon], Object.assign({ radius: 220 }, style)).addTo(overlayGroup);
+      map.flyTo([lat, lon], Math.max(map.getZoom(), 16), { duration: 0.6 });
+      return;
+    }
+    const mec = minEnclosingCircle(pts);
+    const radius = Math.max(mec.radius * 1.04 + 30, 120);
+    filterCircle = L.circle([mec.lat, mec.lon], Object.assign({ radius }, style)).addTo(overlayGroup);
+    map.flyToBounds(filterCircle.getBounds(), { padding: [24, 24], duration: 0.6, maxZoom: 18 });
+  }
+  // 清除筛选：清空条件、搜索框与圆圈，恢复正常蓝色正水滴
+  function clearFilter() {
+    filter.office = []; filter.btype = []; filter.q = ""; filter.photo = { mode: "all", min: 0 };
+    filter.mgmt = []; filter.subsys = []; filter.midcat = []; filter.subcat = []; filter.trans = [];
+    filter.btypeBld = []; filter.officeBld = []; filter.mgmtBld = []; filter.kindBld = [];
+    const s = el("search"); if (s) s.value = "";
+    if (filterCircle) { overlayGroup.removeLayer(filterCircle); filterCircle = null; }
+    render(); saveUI();
+    toast("已清除筛选");
+  }
+
+  // 防御性全局别名：兼容旧构建/外部 HTML 的 onclick 引用，避免 ReferenceError
+window.LIDNotifyld = function () {};
+function showAllParams(id) {
+  const r = (typeof findRec === "function" ? findRec(id) : null) || (typeof records !== "undefined" ? records.find((x) => x && x.id === id) : null);
+  if (!r) return toast("未找到该对象");
+  const rows = Object.keys(r.params || {}).map((k) => `<tr><td class="k">${esc(k)}</td><td>${esc(r.params[k])}</td></tr>`).join("");
+  const sub = esc([layerLabel(r), r.mgmt, r.office || r.city, r.station, r.btype || r.atype].filter(Boolean).join(" / "));
+  const html = `<div class="hint">${sub}</div><div class="pop-params" style="max-height:60vh;overflow:auto">${rows ? `<table>${rows}</table>` : '<div class="hint">无参数</div>'}</div>`;
+  openModal("完整参数 · " + esc(r.name), html, `<button class="btn primary" onclick="APP.close()">关闭</button>`);
+}
+
+function popupHtml(r) {
+    const bld = isBld(r);
+    const tagList = bld ? [orgVal(r, "mgmt"), r.office, r.station, r.btype] : [r.office, r.station, r.btype];
+    const tag = [`<span class="tag ${bld ? "tag-bld" : "tag-dev"}">${bld ? "🏗️ 水工建筑物" : "📡 感知设备"}</span>`]
+      .concat(tagList.filter(Boolean).map((t) => `<span class="tag">${esc(t)}</span>`)).join("");
+    const rows = Object.keys(r.params || {}).map((k) => `<tr><td class="k">${esc(k)}</td><td>${esc(r.params[k])}</td></tr>`).join("");
+    // 弹窗照片封顶 18 张（超出显示 +N），避免单点照片过多拖慢地图弹窗（item 2）
+    const allPh = (r.photos || []);
+    const shownPh = allPh.slice(0, 18);
+    const extraPh = allPh.length - shownPh.length;
+    const ph = shownPh.map((p, i) => `<img src="${p.dataUrl || p.thumb || ""}" data-rid="${r.id}" data-pi="${i}" onclick="APP.viewPhotos('${r.id}')">`).join("") + (extraPh > 0 ? `<div class="th-more">+${extraPh} 张</div>` : "");
+    const navBtn = `<button class="btn ok" onclick="APP.navigate('${r.id}')">导航</button>`;
+    const detailBtn = `<button class="btn ghost" onclick="APP.showAllParams('${r.id}')">完整参数</button>`;
+    const nearBtn = `<button class="btn ghost" onclick="APP.nearCenter('${r.id}')">以此为周边中心</button>`;
+    const relBtn = `<button class="btn ghost" onclick="APP.spatialFor('${r.id}')">周边对象统计</button>`;
+    return `<div class="pop"><h3>${esc(r.name)}</h3>${tag}
+      <div class="pop-params">${rows ? `<table>${rows}</table>` : '<div class="hint">无参数</div>'}</div>
+      ${ph ? `<div class="thumbs">${ph}</div>` : ""}
+      <div class="pop-actions">
+        ${navBtn}
+        ${detailBtn}
+        <button class="btn ok" onclick="APP.edit('${r.id}')">编辑</button>
+        <button class="btn ghost" onclick="APP.shareBuilding('${r.id}')">分享</button>
+        <button class="btn danger" onclick="APP.del('${r.id}')">删除</button>
+      </div>
+      <div class="pop-actions" style="margin-top:6px">${nearBtn}${relBtn}</div></div>`;
+  }
+
+  function esc(s) { return IO.escapeXml(s); }
+
+  function onPopupOpen(e) {
+    const id = e.popup._source._rid;
+    // 占位（按钮用 APP.edit/del 全局）
+  }
+
+  // 列表项 → 快速定位到地图
+  function locateInMap(r) {
+    const lat = +r.lat, lon = +r.lon;
+    if (isFinite(lat) && isFinite(lon)) {
+      // 飞行动画跳转，目标更明显；若已放大则不强行缩小
+      map.flyTo([lat, lon], Math.max(map.getZoom(), 15), { duration: 0.6 });
+      layerGroup.eachLayer((m) => { if (m._rid === r.id) m.openPopup(); });
+    } else {
+      // 沉默失败→明确提示，不再"点了没反应"
+      toast("该" + layerLabel(r) + "缺少有效坐标，无法定位");
+    }
+    el("listbar").classList.remove("open");
+  }
+
+  function renderList() {
+    const box = el("listScroll"); if (!box) return;
+    box.innerHTML = "";
+    const rs = shownRecords().filter(passFilter);
+    for (const r of rs) {
+      const div = document.createElement("div");
+      div.className = "li";
+      const bld = isBld(r);
+      const meta = (bld ? [orgVal(r, "mgmt"), r.office, r.station, r.btype] : [r.office, r.station, r.btype]).filter(Boolean).join(" / ");
+      // 名称后徽标：基础数据→"快速定位"（可点进地图），用户新增→"新增"
+      div.innerHTML = `<div><div class="nm"><span class="ltag ${bld ? "ltag-bld" : "ltag-dev"}">${bld ? "建筑物" : "设备"}</span>${esc(r.name)}</div><div class="mt">${esc(meta)}</div></div><span class="badge locbtn">${r.base ? "快速定位 →" : "新增"}</span>`;
+      div.dataset.id = r.id;
+      div.onclick = () => locateInMap(r);
+      div.addEventListener("contextmenu", (e) => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, ctxItemsFor(r)); });
+      box.appendChild(div);
+    }
+  }
+
+  // ---------- 筛选（多选 机构 / 摄像机类型；选机构自动定位）----------
+  // ---------- 关键词历史（v2.4：搜索关键词持久化，可展开/收起/复用）----------
+  const KW_HIST_KEY = "shipin_kw_hist_v1", KW_HIST_MAX = 12;
+  function loadKwHist() { try { const a = JSON.parse(localStorage.getItem(KW_HIST_KEY) || "[]"); return Array.isArray(a) ? a.filter(Boolean) : []; } catch (e) { return []; } }
+  function pushKwHist(kw) {
+    kw = (kw || "").trim(); if (!kw) return;
+    let a = loadKwHist().filter((x) => x !== kw);
+    a.unshift(kw); a = a.slice(0, KW_HIST_MAX);
+    try { localStorage.setItem(KW_HIST_KEY, JSON.stringify(a)); } catch (e) {}
+  }
+  // ---------- 筛选（v2.4：多选管理处/管理所/信息系统分类/感知子系统/中类/子类/信息传输方式）----------
+  // v2.5.0 水工建筑物对象子类（Q4 决策：「地点」= 建筑物层内的命名地点子类）
+  const BLD_KINDS = [
+    { key: "building", label: "建筑物", icon: "🏗️" },
+    { key: "place", label: "命名地点", icon: "📍" }
+  ];
+  function openFilter() {
+    const dropped = pruneFilter();   // v2.5.0 需求七：打开前先清失效值，避免「幽灵条件」把结果筛空
+    const kwHist = loadKwHist();
+    const group = (title, arr, sel) =>
+      `<div class="fgroup"><div class="ftitle">${title}（<b class="cnt">${sel.length}</b> 已选）</div><div class="chips">` +
+      (arr.length ? arr.map((v) => `<span class="chip ${sel.includes(v) ? "on" : ""}" data-grp="${title}" data-v="${esc(v)}">${esc(v)}</span>`).join("") : `<span class="hint">无</span>`) +
+      `</div></div>`;
+    // v2.5.0 对象类别（需求四-b）：两层各成一组，默认只勾「感知设备」
+    const layerGroup = () =>
+      `<div class="fgroup" id="fgLayers"><div class="ftitle">对象类别（<b class="cnt" id="layCnt">${filter.layers.length}</b> 已选）</div><div class="chips">` +
+      LAYERS.map((L) => `<span class="chip ${filter.layers.includes(L.key) ? "on" : ""}" data-layer="${L.key}">${L.icon} ${L.label}${L.key === LAYER_DEV ? "（默认）" : ""}</span>`).join("") +
+      `</div><div class="hint" style="font-size:12px">对象类别决定地图 / 列表 / 查询 / 导出显示哪一层。两层数据、导入通道、本地存储键完全独立 —— <b>导入水工建筑物永远不会影响或覆盖感知设备</b>；原来的感知设备导入/导出行为保持不变。</div></div>`;
+    const html =
+      `<div class="hint">可多选：管理处与管理所（如 温汤所）、信息系统分类（如 摄像机/节制闸）、感知子系统/中类/子类/信息传输方式。选择管理所会自动定位到其范围中心；不选则显示全部。</div>` +
+      (filter.q && filter.q.trim() ? `<div class="fqhint">🔎 当前查询关键词：<b>${esc(filter.q.trim())}</b><span class="fqsub">（筛选在此基础上叠加，下方命中数已计入）</span></div>` : "") +
+      layerGroup() +
+      `<div id="fgDevBox">` +
+      group("管理处", DIMS.mgmts, filter.mgmt) +
+      group("管理所", DIMS.offices, filter.office) +
+      group("信息系统分类", DIMS.btypes, filter.btype) +
+      group("感知子系统", DIMS.subsys, filter.subsys) +
+      group("中类", DIMS.midcat, filter.midcat) +
+      group("子类", DIMS.subcat, filter.subcat) +
+      group("信息传输方式", DIMS.trans, filter.trans) +
+      `</div>` +
+      `<div id="fgBldBox"${filter.layers.includes(LAYER_BLD) ? "" : ' style="display:none"'}>` +
+      `<div class="fgroup"><div class="ftitle">水工建筑物 · 筛选条件</div><div class="hint" style="font-size:12px">以下四组只作用于水工建筑物层（水利口径：管理处 → 管理所 → 段 → 建筑物类型）。</div></div>` +
+      group("建筑物管理处", DIMS.mgmtsBld, filter.mgmtBld) +
+      group("建筑物管理所", DIMS.officesBld, filter.officeBld) +
+      group("建筑物类型", DIMS.btypesBld, filter.btypeBld) +
+      `<div class="fgroup"><div class="ftitle">对象子类（<b class="cnt">${filter.kindBld.length}</b> 已选）</div><div class="chips">` +
+      BLD_KINDS.map((k) => `<span class="chip ${filter.kindBld.includes(k.key) ? "on" : ""}" data-grp="对象子类" data-v="${k.key}">${k.icon} ${k.label}</span>`).join("") +
+      `</div><div class="hint" style="font-size:12px">「命名地点」只放常用的、有名的、坐标无歧义的位置（如天安门），不带工程参数、不参与建筑物类型统计。</div></div>` +
+      `</div>` +
+      (kwHist.length ? `<div class="fgroup"><div class="ftitle collapsible" id="kwHistTog" style="cursor:pointer">🔎 关键词历史（<b class="cnt">${kwHist.length}</b>）<span class="tg">＋</span></div><div class="chips" id="kwHistBox" style="display:none">` + kwHist.map((k) => `<span class="chip kw" data-kw="${esc(k)}">${esc(k)}</span>`).join("") + `</div></div>` : "") +
+      `<div class="fgroup"><div class="ftitle">照片</div><div class="chips" id="phFiltChips">` +
+        `<span class="chip ${filter.photo.mode === "all" ? "on" : ""}" data-pm="all">全部</span>` +
+        `<span class="chip ${filter.photo.mode === "has" ? "on" : ""}" data-pm="has">有照片</span>` +
+        `<span class="chip ${filter.photo.mode === "none" ? "on" : ""}" data-pm="none">无照片</span>` +
+        `<span class="chip ${filter.photo.mode === "min" ? "on" : ""}" data-pm="min">至少 N 张</span>` +
+      `</div><div class="field" style="margin-top:8px"><label>至少张数（选「至少 N 张」时生效）</label><input type="number" id="phFiltMin" min="1" value="${filter.photo.min || 1}" style="width:110px"></div></div>` +
+      `<div class="fgroup"><div class="ftitle">管理维护</div><div class="chips">` +
+        `<button class="chip" id="mOrgMgr" style="cursor:pointer">🏛️ 机构层级与默认名称管理</button>` +
+        `<button class="chip" id="mBtypeMgr" style="cursor:pointer">🏷️ 分类维度管理</button>` +
+        `<button class="chip" id="fOfficeMaint" style="cursor:pointer">⚙️ 管理所维护（已并入机构层级）</button>` +
+        `<button class="chip" id="fStationMaint" style="cursor:pointer">⚙️ 库渠维护（已并入机构层级）</button>` +
+      `</div></div>` +
+      `<div class="fhit" id="fHit" style="margin-top:12px;padding:9px 12px;border:1px dashed var(--accent);border-radius:10px;color:var(--txt);font-size:13px">当前命中 <b id="fHitB" style="color:var(--accent);font-size:15px">0</b> 个监控点 · <b id="fHitP" style="color:var(--accent);font-size:15px">0</b> 张照片</div>`;
+    openModal("筛选", html, `<button class="btn ghost" id="fExit">退出</button><button class="btn ghost" id="fReset">重置</button><button class="btn primary" id="fApply">应用</button>`);
+    // v2.5.0 需求七：在弹窗内提示被自动清除的失效条件（弹窗打开后再提示，否则 toast 被遮住）
+    if (dropped) setTimeout(() => toast(`已自动清除 ${dropped} 个已失效的筛选条件（设置中已删除/改名）`), 80);
+    const body = el("modalBody");
+    const liveCount = () => {
+      const lay = [...body.querySelectorAll('.chip[data-layer].on')].map((c) => c.dataset.layer);
+      const bo = [...body.querySelectorAll('.chip[data-grp="管理所"].on')].map((c) => c.dataset.v);
+      const mg = [...body.querySelectorAll('.chip[data-grp="管理处"].on')].map((c) => c.dataset.v);
+      const bt = [...body.querySelectorAll('.chip[data-grp="信息系统分类"].on')].map((c) => c.dataset.v);
+      const sub = [...body.querySelectorAll('.chip[data-grp="感知子系统"].on')].map((c) => c.dataset.v);
+      const mid = [...body.querySelectorAll('.chip[data-grp="中类"].on')].map((c) => c.dataset.v);
+      const ssub = [...body.querySelectorAll('.chip[data-grp="子类"].on')].map((c) => c.dataset.v);
+      const tr = [...body.querySelectorAll('.chip[data-grp="信息传输方式"].on')].map((c) => c.dataset.v);
+      // v2.5.0 建筑物层条件
+      const boB = [...body.querySelectorAll('.chip[data-grp="建筑物管理所"].on')].map((c) => c.dataset.v);
+      const mgB = [...body.querySelectorAll('.chip[data-grp="建筑物管理处"].on')].map((c) => c.dataset.v);
+      const btB = [...body.querySelectorAll('.chip[data-grp="建筑物类型"].on')].map((c) => c.dataset.v);
+      const kdB = [...body.querySelectorAll('.chip[data-grp="对象子类"].on')].map((c) => c.dataset.v);
+      const q = (el("search") ? el("search").value : "").trim().toLowerCase();
+      let b = 0, p = 0; // b=命中对象数，p=命中照片张数
+      for (const r of records.concat(recordsBld)) {
+        const isB = isBld(r);
+        if (lay.length && !lay.includes(isB ? LAYER_BLD : LAYER_DEV)) continue;
+        if (isB) {
+          if (mgB.length && !mgB.includes(orgVal(r, "mgmt"))) continue;
+          if (boB.length && !boB.includes(normOffice(orgVal(r, "office")))) continue;
+          if (btB.length && !btB.includes(r.btype)) continue;
+          if (kdB.length && !kdB.includes(r.kind || "building")) continue;
+        } else {
+          if (bo.length && !bo.includes(normOffice(orgVal(r, "office")))) continue;
+          if (mg.length && !mg.includes(orgVal(r, "mgmt"))) continue;
+          if (bt.length && !bt.includes(r.btype)) continue;
+          if (sub.length && !sub.includes(r.subsys)) continue;
+          if (mid.length && !mid.includes(r.midcat)) continue;
+          if (ssub.length && !ssub.includes(r.subcat)) continue;
+          if (tr.length && !tr.includes(r.trans)) continue;
+        }
+        if (q && !matchKeyword(r, q)) continue;
+        if (filter.photo && filter.photo.mode !== "all") {
+          const cnt = (r.photos || []).length;
+          if (filter.photo.mode === "has" && cnt <= 0) continue;
+          if (filter.photo.mode === "none" && cnt > 0) continue;
+          if (filter.photo.mode === "min" && cnt < (filter.photo.min || 0)) continue;
+        }
+        b++; p += (r.photos || []).length;
+      }
+      return { b, p };
+    };
+    // 防抖（item 3 根因修复：照片 chip/至少 N 张 oninput 高频触发全库循环，4000+ 记录时会卡顿/死机；200ms 防抖让出主线程）
+    let _hitT = null;
+    const refreshHit = () => { if (_hitT) clearTimeout(_hitT); _hitT = setTimeout(() => { const h = el("fHit"); if (!h) return; const c = liveCount(); h.querySelector("#fHitB").textContent = c.b; h.querySelector("#fHitP").textContent = c.p; }, 200); };
+    // v2.5.0 对象类别 chips：切换即显示/隐藏建筑物专属条件区，并实时刷新命中数
+    body.querySelectorAll(".chip[data-layer]").forEach((c) => c.onclick = () => {
+      c.classList.toggle("on");
+      const sel = [...body.querySelectorAll(".chip[data-layer].on")].map((x) => x.dataset.layer);
+      const lc = el("layCnt"); if (lc) lc.textContent = sel.length;
+      const bb = el("fgBldBox"); if (bb) bb.style.display = sel.includes(LAYER_BLD) ? "" : "none";
+      refreshHit();
+    });
+    // 多选组：仅绑定含 data-grp 的 chip，照片 chip 无 data-grp 走下方单选
+    body.querySelectorAll('.chip[data-grp]').forEach((c) => c.onclick = () => {
+      c.classList.toggle("on");
+      const grp = c.dataset.grp;
+      const sel = [...body.querySelectorAll(`.chip[data-grp="${grp}"].on`)].map((x) => x.dataset.v);
+      const cntEl = c.closest(".fgroup").querySelector(".cnt");
+      if (cntEl) cntEl.textContent = sel.length; // 守卫：照片组无 .cnt
+      refreshHit();
+    });
+    // 关键词历史：展开/收起 + 点击复用
+    const kwTog = el("kwHistTog"), kwBox = el("kwHistBox");
+    if (kwTog) kwTog.onclick = () => {
+      if (!kwBox) return;
+      const open = kwBox.style.display !== "none";
+      kwBox.style.display = open ? "none" : "";
+      kwTog.querySelector(".tg").textContent = open ? "＋" : "－";
+    };
+    body.querySelectorAll(".chip.kw").forEach((c) => c.onclick = () => {
+      const kw = c.dataset.kw;
+      const s = el("search"); if (s) s.value = kw;
+      filter.q = kw; saveUI(); refreshHit();
+      toast("已套用关键词：" + kw);
+    });
+    // 照片维度筛选：单选（互斥）
+    const phChips = body.querySelectorAll("#phFiltChips .chip");
+    phChips.forEach((c) => c.onclick = () => {
+      phChips.forEach((x) => x.classList.remove("on"));
+      c.classList.add("on");
+      filter.photo.mode = c.dataset.pm;
+      if (c.dataset.pm !== "min") filter.photo.min = 0;
+      refreshHit();
+    });
+    const phMin = el("phFiltMin");
+    if (phMin) phMin.oninput = () => { if (filter.photo.mode === "min") { filter.photo.min = Math.max(1, parseInt(phMin.value) || 1); refreshHit(); } };
+    refreshHit();
+    el("fExit").onclick = closeModal;
+    el("fApply").onclick = () => {
+      const lay = [...body.querySelectorAll(".chip[data-layer].on")].map((c) => c.dataset.layer);
+      // 对象类别一个都不勾 → 地图会全空，属误操作，直接拦住并提示（不静默变空图）
+      if (!lay.length) return toast("请至少选择一类对象（感知设备 / 水工建筑物）");
+      filter.layers = lay;
+      filter.btype = [...body.querySelectorAll('.chip[data-grp="信息系统分类"].on')].map((c) => c.dataset.v);
+      filter.office = [...body.querySelectorAll('.chip[data-grp="管理所"].on')].map((c) => c.dataset.v);
+      filter.mgmt = [...body.querySelectorAll('.chip[data-grp="管理处"].on')].map((c) => c.dataset.v);
+      filter.subsys = [...body.querySelectorAll('.chip[data-grp="感知子系统"].on')].map((c) => c.dataset.v);
+      filter.midcat = [...body.querySelectorAll('.chip[data-grp="中类"].on')].map((c) => c.dataset.v);
+      filter.subcat = [...body.querySelectorAll('.chip[data-grp="子类"].on')].map((c) => c.dataset.v);
+      filter.trans = [...body.querySelectorAll('.chip[data-grp="信息传输方式"].on')].map((c) => c.dataset.v);
+      filter.mgmtBld = [...body.querySelectorAll('.chip[data-grp="建筑物管理处"].on')].map((c) => c.dataset.v);
+      filter.officeBld = [...body.querySelectorAll('.chip[data-grp="建筑物管理所"].on')].map((c) => c.dataset.v);
+      filter.btypeBld = [...body.querySelectorAll('.chip[data-grp="建筑物类型"].on')].map((c) => c.dataset.v);
+      filter.kindBld = [...body.querySelectorAll('.chip[data-grp="对象子类"].on')].map((c) => c.dataset.v);
+      const pm = body.querySelector("#phFiltChips .chip.on");
+      filter.photo.mode = pm ? pm.dataset.pm : "all";
+      const mn = el("phFiltMin");
+      filter.photo.min = (filter.photo.mode === "min" && mn) ? Math.max(1, parseInt(mn.value) || 1) : 0;
+      if (filter.q && filter.q.trim()) pushKwHist(filter.q);
+      closeModal(); render(); saveUI();
+      // 结果行为：0→提示无符合；1→跳到该点；多→绿色虚线圆圈圈出全部并刚好显示
+      const rs = shownRecords().filter(passFilter);
+      if (!rs.length) toast("没有符合条件的选项");
+      else if (rs.length === 1) {
+        const r = rs[0], lat = +r.lat, lon = +r.lon;
+        if (isFinite(lat) && isFinite(lon)) { map.flyTo([lat, lon], Math.max(map.getZoom(), 16), { duration: 0.6 }); layerGroup.eachLayer((m) => { if (m._rid === r.id) m.openPopup(); }); }
+        toast("已定位唯一匹配：" + r.name);
+      } else {
+        drawFilterCircle(rs);
+        toast(`已筛选出 ${rs.length} 个对象，已用绿色虚线圆圈圈出并居中显示`);
+      }
+    };
+    el("fReset").onclick = () => {
+      filter.office = []; filter.mgmt = []; filter.btype = []; filter.subsys = []; filter.midcat = []; filter.subcat = []; filter.trans = []; filter.photo = { mode: "all", min: 0 };
+      filter.mgmtBld = []; filter.officeBld = []; filter.btypeBld = []; filter.kindBld = [];
+      filter.layers = [LAYER_DEV];   // 重置回「感知设备」默认口径
+      openFilter();
+    };
+    el("mOrgMgr").onclick = () => openOrgManager();
+    el("mBtypeMgr").onclick = () => openClassifyManager();
+    el("fOfficeMaint").onclick = () => openOrgManager("office"); // 兼容旧按钮 → 跳到机构层级并聚焦"所"
+    el("fStationMaint").onclick = () => openOrgManager("station"); // 兼容旧按钮 → 跳到机构层级并聚焦"站"
+  }
+  function openOrgManager(focusLevel) {
+    pruneFilter();   // v2.5.0 需求七：进设置页前先清失效值，与筛选侧名单口径当场对齐
+    const LV = {
+      bureau:  { label: "局",     field: "bureau",  dims: () => DIMS.bureaus,  extra: () => ORGCFG.bureaus,  setExtra: (a) => { ORGCFG.bureaus = a; } },
+      mgmt:    { label: "管理处", field: "mgmt",    dims: () => DIMS.mgmts,    extra: () => ORGCFG.mgmts,    setExtra: (a) => { ORGCFG.mgmts = a; } },
+      office:  { label: "所",     field: "office",  dims: () => DIMS.offices,  extra: () => ORGCFG.officeExtra, setExtra: (a) => { ORGCFG.officeExtra = a; } },
+      station: { label: "站",     field: "station", dims: () => DIMS.stations, extra: null },
+      section: { label: "段",     field: "section", dims: () => DIMS.sections, extra: () => ORGCFG.sections, setExtra: (a) => { ORGCFG.sections = a; } }
+    };
+    const cntOf = (lv, v) => {
+      if (lv === "station") return records.filter((r) => (r.station || "") === v).length;
+      if (lv === "office") return records.filter((r) => normOffice(orgVal(r, "office")) === v).length;
+      return records.filter((r) => orgVal(r, lv) === v).length;
+    };
+    const isDefaultOf = (lv, v) => orgDefault(lv) === v;
+    const rows = (lv) => {
+      const L = LV[lv];
+      return (L.dims() || []).map((v) => {
+        const cnt = cntOf(lv, v);
+        const isDef = isDefaultOf(lv, v);
+        const isBase = (lv === "office" && BASE_OFFICES_SET.has(v)) || (lv === "mgmt" && BASE_MGMTS_SET.has(v));
+        const isExtra = L.extra ? (L.extra() || []).includes(v) : ((ORGCFG.stations || []).some((x) => x.name === v));
+        const tag = isDef
+          ? `<span class="cfg-lock">${isBase ? "⭐ 默认 · 🔒 基础名单" : "⭐ 默认"}</span>`
+          : isBase ? '<span class="cfg-lock">🔒 基础名单</span>' : isExtra ? "自定义" : "数据派生";
+        let acts = `<button class="btn tiny" data-ren="${lv}" data-v="${esc(v)}">重命名</button>`;
+        if (!isDef && !isBase && isExtra) acts += ` <button class="btn tiny danger" data-del="${lv}" data-v="${esc(v)}">删除</button>`;
+        let parent = "";
+        if (lv === "station") {
+          const off = stationOffice(v);
+          parent = `<span class="cfg-off"><select class="st-off" data-st="${esc(v)}">${DIMS.offices.map((o) => `<option value="${esc(o)}" ${o === off ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></span>`;
+        }
+        if (lv === "section") {
+          const st = (ORGCFG.secParent || {})[v] || "";
+          parent = `<span class="cfg-off"><select class="sec-par" data-sec="${esc(v)}"><option value="">（不隶属站）</option>${DIMS.stations.map((o) => `<option value="${esc(o)}" ${o === st ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></span>`;
+        }
+        return `<div class="cfg-row"><span class="cfg-name">${esc(v)}</span><span class="cfg-sub">${cnt} 个监控点 · ${tag}</span>${parent}<span class="cfg-acts">${acts}</span></div>`;
+      }).join("") || '<span class="hint">暂无</span>';
+    };
+    const addRow = (lv, extraHtml) =>
+      `<div class="cfg-add"><input id="add_${lv}" placeholder="新增${LV[lv].label}名称">${extraHtml || ""}<button class="btn primary" data-add="${lv}">➕ 添加</button></div>`;
+    const sec = (lv, hint, extraHtml) =>
+      `<div class="fgroup" id="sec_${lv}"><div class="ftitle">${LV[lv].label}（<b class="cnt">${(LV[lv].dims() || []).length}</b>）</div>` +
+      (hint ? `<div class="hint">${hint}</div>` : "") + `<div class="cfg-list">${rows(lv)}</div>` + addRow(lv, extraHtml) + `</div>`;
+    const defRow = (lv) => `<div class="cfg-row"><span class="cfg-name" style="min-width:64px">默认${LV[lv].label}</span>` +
+      `<input class="cfg-definp" id="def_${lv}" value="${esc(orgDefault(lv))}" placeholder="默认${LV[lv].label}名称" style="flex:1"></div>`;
+    const html = `<div class="hint">组织层级：局 → 管理处 → 所 → 站 → 段。此处增删改会<b>同步更新</b>筛选、导入导出、添加监控点等全部用到该层级的位置；重命名可级联更新监控点。</div>` +
+      sec("bureau", "顶级单位，默认：" + esc(orgDefault("bureau"))) +
+      sec("mgmt", "本栏与「筛选 → 管理处」<b>同一份名单、同一顺序</b>（默认 → 🔒 基础名单 → 其余），逐项对应。基础名单为「清源灌区管理处」，不可删除、不可改名；自行添加的处显示为「自定义」，可重命名或删除（改名会级联同步到数据）。默认：" + esc(orgDefault("mgmt"))) +
+      sec("office", "基础 9 所名单不可删；自定义可重命名/删除。") +
+      sec("station", "站隶属于所（右侧下拉可调整）。") +
+      sec("section", "段隶属于站（可留空）。") +
+      `<div class="fgroup"><div class="ftitle">默认值（新增监控点预填 / 空值回填显示）</div>` +
+      `<div class="cfg-list">` + ORG_LEVELS.map((l) => defRow(l.key)).join("") + `</div></div>` +
+      `<div class="hint" id="orgSyncTip">修改即时生效并已自动保存；点「保存并全量同步」将刷新全部界面与统计。</div>`;
+    openModal("机构层级管理", html, `<button class="btn ghost" id="omClose">关闭</button><button class="btn primary" id="omSync">💾 保存并全量同步</button>`);
+    const body = el("modalBody");
+    const redraw = () => { saveCFG(); applyDims(); openOrgManager(focusLevel); };
+    body.querySelectorAll('button[data-ren]').forEach((b) => b.onclick = () => {
+      const lv = b.dataset.ren, old = b.dataset.v;
+      const nv = (prompt("重命名「" + LV[lv].label + "」：" + old + " →", old) || "").trim();
+      if (!nv || nv === old) return;
+      renameOrg(lv, old, nv, () => redraw());
+    });
+    body.querySelectorAll('button[data-del]').forEach((b) => b.onclick = () => {
+      const lv = b.dataset.del, v = b.dataset.v;
+      const aff = LV[lv].dims() ? cntOf(lv, v) : 0;
+      if (!confirm(`确认删除${LV[lv].label}「${v}」？${aff ? "\n（" + aff + " 个监控点仍保留该名称，仅从下拉选项移除）" : ""}`)) return;
+      deleteOrg(lv, v, () => redraw());
+    });
+    body.querySelectorAll('button[data-add]').forEach((b) => b.onclick = () => {
+      const lv = b.dataset.add;
+      const v = (el("add_" + lv).value || "").trim();
+      if (!v) return toast("名称不能为空");
+      if ((LV[lv].dims() || []).includes(v)) return toast("已存在同名" + LV[lv].label);
+      addOrg(lv, v, null);
+      toast("已添加" + LV[lv].label + "：" + v); redraw();
+    });
+    body.querySelectorAll("select.st-off").forEach((sl) => sl.onchange = () => {
+      const nm = sl.dataset.st, off = sl.value;
+      const rec = (ORGCFG.stations || []).find((x) => x.name === nm);
+      if (rec) { rec.office = off; saveCFG(); toast("已更新「" + nm + "」所属管理所：" + off); }
+    });
+    body.querySelectorAll("select.sec-par").forEach((sl) => sl.onchange = () => {
+      ORGCFG.secParent = ORGCFG.secParent || {};
+      ORGCFG.secParent[sl.dataset.sec] = sl.value; saveCFG(); toast("已更新段隶属站");
+    });
+    body.querySelectorAll("input.cfg-definp").forEach((inp) => inp.onchange = () => {
+      const lv = inp.id.replace("def_", "");
+      ORGCFG.defaults[lv] = inp.value.trim(); saveCFG(); applyDims();
+      toast("默认" + LV[lv].label + "已更新：" + (ORGCFG.defaults[lv] || "（空）"));
+    });
+    el("omClose").onclick = () => { closeModal(); openFilter(); };
+    el("omSync").onclick = () => {
+      saveCFG(); merge(); applyDims(); render();
+      toast(`已全量同步：局${DIMS.bureaus.length} · 管理处${DIMS.mgmts.length} · 所${DIMS.offices.length} · 站${DIMS.stations.length} · 段${DIMS.sections.length} · 类型${DIMS.btypes.length}`);
+    };
+  }
+  function renameOrg(lv, old, nv, done) {
+    const dup = (lv === "station") ? DIMS.stations.includes(nv)
+      : (lv === "office") ? DIMS.offices.includes(nv)
+      : (lv === "bureau") ? DIMS.bureaus.includes(nv)
+      : (lv === "mgmt") ? DIMS.mgmts.includes(nv)
+      : DIMS.sections.includes(nv);
+    if (dup) { toast("已存在同名"); return; }
+    const aff = (lv === "office") ? records.filter((r) => normOffice(orgVal(r, "office")) === old)
+      : records.filter((r) => orgVal(r, lv) === old);
+    const cascade = aff.length ? confirm(`将把 ${aff.length} 个监控点的${lv === "office" ? "管理所" : "该层级"}「${old}」改为「${nv}」，是否一并更新？\n（取消则仅修改下拉名称，监控点保留旧名）`) : false;
+    (async () => {
+      if (cascade) {
+        await Store.patch((d) => { aff.forEach((r) => { const o = Object.assign({}, r); o[lv] = nv; d.updated[r.id] = o; }); });
+        DELTA = await Store.get();
+      }
+      if (lv === "office") {
+        ORGCFG.officeExtra = [...(ORGCFG.officeExtra || []).filter((x) => normOffice(x) !== old), nv];
+        (ORGCFG.stations || []).forEach((s) => { if (normOffice(s.office) === old) s.office = nv; });
+      } else if (lv === "station") {
+        const rec = (ORGCFG.stations || []).find((x) => x.name === old);
+        if (rec) rec.name = nv;
+      } else if (lv === "bureau" || lv === "mgmt" || lv === "section") {
+        const arr = (lv === "bureau") ? ORGCFG.bureaus : (lv === "mgmt") ? ORGCFG.mgmts : ORGCFG.sections;
+        ORGCFG[lv === "bureau" ? "bureaus" : lv === "mgmt" ? "mgmts" : "sections"] = [...(arr || []).filter((x) => x !== old), nv];
+      }
+      if (orgDefault(lv) === old) ORGCFG.defaults[lv] = nv;
+      saveCFG(); merge(); applyDims(); render();
+      toast("已重命名：" + old + " → " + nv);
+      if (done) done();
+    })();
+  }
+  function deleteOrg(lv, v, done) {
+    if (lv === "office") {
+      ORGCFG.officeExtra = (ORGCFG.officeExtra || []).filter((x) => normOffice(x) !== v);
+      (ORGCFG.stations || []).forEach((s) => { if (normOffice(s.office) === v) s.office = ""; });
+    } else if (lv === "station") {
+      ORGCFG.stations = (ORGCFG.stations || []).filter((x) => x.name !== v);
+    } else if (lv === "bureau") ORGCFG.bureaus = (ORGCFG.bureaus || []).filter((x) => x !== v);
+    else if (lv === "mgmt") ORGCFG.mgmts = (ORGCFG.mgmts || []).filter((x) => x !== v);
+    else if (lv === "section") ORGCFG.sections = (ORGCFG.sections || []).filter((x) => x !== v);
+    saveCFG(); applyDims();
+    toast("已删除：" + v);
+    if (done) done();
+  }
+  function addOrg(lv, v, _parent) {
+    if (lv === "office") ORGCFG.officeExtra = [...(ORGCFG.officeExtra || []), v];
+    else if (lv === "station") ORGCFG.stations = [...(ORGCFG.stations || []), { office: orgDefault("office"), name: v }];
+    else if (lv === "bureau") ORGCFG.bureaus = [...(ORGCFG.bureaus || []), v];
+    else if (lv === "mgmt") ORGCFG.mgmts = [...(ORGCFG.mgmts || []), v];
+    else if (lv === "section") ORGCFG.sections = [...(ORGCFG.sections || []), v];
+    saveCFG(); applyDims();
+  }
+  // ---------- 分类维度管理（v2.4：信息系统分类 + 感知子系统 + 中类 + 子类 + 信息传输方式）----------
+  const CLASSIFY_DIMS = [
+    { key: "btype",  label: "信息系统分类", field: "btype",  dimsKey: "btypes",  extraKey: "btypeExtra" },
+    { key: "subsys", label: "感知子系统",   field: "subsys", dimsKey: "subsys",  extraKey: "subsysExtra" },
+    { key: "midcat", label: "中类",         field: "midcat", dimsKey: "midcat",  extraKey: "midcatExtra" },
+    { key: "subcat", label: "子类",         field: "subcat", dimsKey: "subcat",  extraKey: "subcatExtra" },
+    { key: "trans",  label: "信息传输方式", field: "trans",  dimsKey: "trans",   extraKey: "transExtra" }
+  ];
+  function openBtypeManager() { openClassifyManager(); }
+  function openClassifyManager() {
+    const html = `<div class="hint">分类维度共 5 项（信息系统分类 / 感知子系统 / 中类 / 子类 / 信息传输方式）。数据派生类型可重命名（级联更新监控点），自定义类型可重命名/删除。修改后自动同步筛选、表单、导出等全部位置。</div>` +
+      CLASSIFY_DIMS.map((d) => {
+        const list = DIMS[d.dimsKey] || [];
+        const rows = list.map((v) => {
+          const cnt = records.filter((r) => (r[d.field] || "") === v).length;
+          const isExtra = (ORGCFG[d.extraKey] || []).includes(v);
+          const tag = isExtra ? "自定义" : "数据派生";
+          const acts = `<button class="btn tiny" data-act="ren" data-d="${d.key}" data-v="${esc(v)}">重命名</button>` + (isExtra ? ` <button class="btn tiny danger" data-act="del" data-d="${d.key}" data-v="${esc(v)}">删除</button>` : "");
+          return `<div class="cfg-row"><span class="cfg-name">${esc(v)}</span><span class="cfg-sub">${cnt} 个监控点 · ${tag}</span><span class="cfg-acts">${acts}</span></div>`;
+        }).join("") || '<span class="hint">暂无</span>';
+        return `<div class="fgroup" id="sec_${d.key}"><div class="ftitle">${d.label}（<b class="cnt">${list.length}</b>）</div><div class="cfg-list">${rows}</div>` +
+          `<div class="cfg-add"><input id="add_${d.key}" placeholder="新增${d.label}"><button class="btn primary" data-act="add" data-d="${d.key}">➕ 添加</button></div></div>`;
+      }).join("");
+    openModal("分类维度管理", html, `<button class="btn ghost" id="btClose">关闭</button><button class="btn primary" id="btSync">💾 保存并全量同步</button>`);
+    const body = el("modalBody");
+    const redraw = () => { saveCFG(); applyDims(); openClassifyManager(); };
+    body.querySelectorAll('button[data-act="ren"]').forEach((b) => b.onclick = () => {
+      const key = b.dataset.d, old = b.dataset.v;
+      const d = CLASSIFY_DIMS.find((x) => x.key === key);
+      const nv = (prompt("重命名「" + d.label + "」" + old + " 为：", old) || "").trim();
+      if (!nv || nv === old) return;
+      if ((DIMS[d.dimsKey] || []).includes(nv)) return toast("已存在同名");
+      const aff = records.filter((r) => (r[d.field] || "") === old);
+      const cascade = aff.length ? confirm(`将把 ${aff.length} 个监控点的「${old}」改为「${nv}」，是否一并更新？`) : false;
+      (async () => {
+        if (cascade) {
+          await Store.patch((upd) => { aff.forEach((r) => { const o = Object.assign({}, r); o[d.field] = nv; if (d.key === "btype") o.type = (o.station && nv) ? o.station + "--" + nv : nv; upd.updated[r.id] = o; }); });
+          DELTA = await Store.get();
+        }
+        ORGCFG[d.extraKey] = [...(ORGCFG[d.extraKey] || []).filter((x) => x !== old), nv];
+        saveCFG(); merge(); applyDims(); render(); redraw();
+        toast("已重命名：" + old + " → " + nv);
+      })();
+    });
+    body.querySelectorAll('button[data-act="del"]').forEach((b) => b.onclick = () => {
+      const key = b.dataset.d, v = b.dataset.v;
+      const d = CLASSIFY_DIMS.find((x) => x.key === key);
+      const aff = records.filter((r) => (r[d.field] || "") === v).length;
+      if (!confirm(`确认删除「${v}」？${aff ? "\n（" + aff + " 个监控点仍保留该值，仅从下拉选项移除）" : ""}`)) return;
+      ORGCFG[d.extraKey] = (ORGCFG[d.extraKey] || []).filter((x) => x !== v);
+      saveCFG(); applyDims(); redraw(); toast("已删除：" + v);
+    });
+    body.querySelectorAll('button[data-act="add"]').forEach((b) => b.onclick = () => {
+      const key = b.dataset.d;
+      const d = CLASSIFY_DIMS.find((x) => x.key === key);
+      const v = (el("add_" + key).value || "").trim();
+      if (!v) return toast("名称不能为空");
+      if ((DIMS[d.dimsKey] || []).includes(v)) return toast("已存在同名");
+      ORGCFG[d.extraKey] = [...(ORGCFG[d.extraKey] || []), v];
+      saveCFG(); applyDims(); redraw(); toast("已添加：" + v);
+    });
+    el("btClose").onclick = () => { closeModal(); openFilter(); };
+    el("btSync").onclick = () => { saveCFG(); merge(); applyDims(); render(); toast("已全量同步：5 个分类维度已同步至筛选/表单/导出"); };
+  }
+
+  // ---------- 添加 / 编辑 表单（v2.4：局/管理处/所/站/段 + 5 分类维度；v2.5.0：按对象类别分流）----------
+  // formLayer / formKind：当前表单所属数据层与子类（building=水工建筑物 / place=命名地点）
+  let formLayer = LAYER_DEV, formKind = "building";
+  function formHtml(r, opt) {
+    r = r || {};
+    opt = opt || {};
+    formLayer = opt.layer || (isBld(r) ? LAYER_BLD : LAYER_DEV);
+    formKind = opt.kind || r.kind || (formLayer === LAYER_BLD ? "building" : "");
+    formPhotos = (r.photos || []).map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || p.thumb || "" }));
+    const sel = (id, arr, val) => `<select id="${id}">${[""].concat(arr).map((v) => `<option ${v === val ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`;
+    const selKV = (id, pairs, val) => `<select id="${id}">${pairs.map((p) => `<option value="${p[0]}" ${p[0] === val ? "selected" : ""}>${esc(p[1])}</option>`).join("")}</select>`;
+    const dv = (k) => orgDefault(k);
+    const coordBlock = `<div class="row2">
+        <div class="field"><label>经度</label><input id="fLon" value="${r.lon != null ? r.lon : ""}" inputmode="decimal"></div>
+        <div class="field"><label>纬度</label><input id="fLat" value="${r.lat != null ? r.lat : ""}" inputmode="decimal"></div>
+      </div>
+      <button class="btn ghost" id="fPick" style="margin-bottom:12px">📍 在地图上点选坐标</button>`;
+    const photoBlock = `<div class="field"><label>照片（可多张：正面 / 背面 / 侧面…）</label>
+        <div class="photo-grid" id="fPhotos"></div>
+        <div class="photo-add" id="fAddPhoto">＋ 添加照片</div>
+        <input type="file" id="fFile" accept="image/*" multiple style="display:none">
+      </div>`;
+    // ---------- 命名地点（Q4：只放常用的、有名的、坐标无歧义的位置；最简字段）----------
+    if (formLayer === LAYER_BLD && formKind === "place") {
+      const note = r.params && r.params["备注"] ? r.params["备注"] : "";
+      return `<div class="hint">📍 命名地点：只放常用的、有名的、坐标无歧义的位置（如天安门、颐和园）。仅需「名称 + 坐标」，可选照片与备注；<b>不带工程参数、不参与建筑物类型统计</b>。</div>
+      <div class="field"><label>地点名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
+      ${coordBlock}
+      <button class="btn ghost" id="fPlaceSearch" style="margin-bottom:12px">🔍 按地名搜坐标（需联网）</button>
+      <div class="field"><label>备注</label><textarea id="fParams" rows="2">${esc(note)}</textarea></div>
+      ${photoBlock}
+      <div style="display:none">${sel("fBureau", DIMS.bureaus, r.bureau || dv("bureau"))}${sel("fMgmt", DIMS.mgmtsBld, r.mgmt || dv("mgmt"))}${sel("fOffice", DIMS.officesBld, r.office)}${sel("fStation", DIMS.stationsBld || [], r.station)}${sel("fBtype", DIMS.btypesBld, "地点")}</div>`;
+    }
+    // ---------- 水工建筑物（水利口径：管理处 → 管理所 → 段 → 建筑物类型）----------
+    if (formLayer === LAYER_BLD) {
+      return `<div class="hint">🏗️ 水工建筑物（属于「水工建筑物」独立数据层，与感知设备数据互不影响）。字段口径与水利一张图一致：管理处 / 管理所 / 段。</div>
+      <div class="row2">
+        <div class="field"><label>名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
+        <div class="field"><label>建筑物类型</label>${sel("fBtype", DIMS.btypesBld, r.btype)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>管理处</label>${sel("fMgmt", DIMS.mgmtsBld, r.mgmt || dv("mgmt"))}</div>
+        <div class="field"><label>管理所</label>${sel("fOffice", DIMS.officesBld, r.office)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>段 / 站</label>${sel("fStation", DIMS.stationsBld || [], r.station)}</div>
+        <div class="field"><label>对象子类</label>${selKV("fKind", [["building", "建筑物"], ["place", "命名地点"]], r.kind || "building")}</div>
+      </div>
+      ${coordBlock}
+      <div class="field"><label>工程参数（每行 字段: 值）</label><textarea id="fParams">${esc((r.params ? Object.entries(r.params).map(([k, v]) => `${k} : ${v}`).join("\n") : ""))}</textarea></div>
+      ${photoBlock}
+      <div style="display:none">${sel("fBureau", DIMS.bureaus, r.bureau || dv("bureau"))}${sel("fSection", DIMS.sectionsBld || [], r.section)}</div>`;
+    }
+    // ---------- 感知设备（原有表单，一字未改）----------
+    return `<div class="row2">
+        <div class="field"><label>名称 *</label><input id="fName" value="${esc(r.name || "")}"></div>
+        <div class="field"><label>信息系统分类（原摄像机类型）</label>${sel("fBtype", DIMS.btypes, r.btype || dv("btype") || r.btype)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>局</label>${sel("fBureau", DIMS.bureaus, r.bureau || dv("bureau"))}</div>
+        <div class="field"><label>管理处</label>${sel("fMgmt", DIMS.mgmts, r.mgmt || dv("mgmt"))}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>管理所</label>${sel("fOffice", DIMS.offices, r.office || dv("office"))}</div>
+        <div class="field"><label>管理站</label>${sel("fStation", DIMS.stations, r.station)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>渠道段</label>${sel("fSection", DIMS.sections, r.section)}</div>
+        <div class="field"><label>感知子系统</label>${sel("fSubsys", DIMS.subsys, r.subsys)}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>中类</label>${sel("fMidcat", DIMS.midcat, r.midcat)}</div>
+        <div class="field"><label>子类</label>${sel("fSubcat", DIMS.subcat, r.subcat)}</div>
+      </div>
+      <div class="field"><label>信息传输方式</label>${sel("fTrans", DIMS.trans, r.trans)}</div>
+      ${coordBlock}
+      <div class="field"><label>工程参数（每行 字段: 值）</label><textarea id="fParams">${esc((r.params ? Object.entries(r.params).map(([k, v]) => `${k} : ${v}`).join("\n") : ""))}</textarea></div>
+      ${photoBlock}`;
+  }
+  function renderPhotos() {
+    const box = el("fPhotos"); if (!box) return;
+    box.innerHTML = formPhotos.map((p, i) =>
+      `<div class="photo-item"><img src="${p.dataUrl}"><div class="pc"><input value="${esc(p.caption)}" data-i="${i}" class="pcap" style="width:100%;border:0;background:transparent;color:#fff;font-size:11px" placeholder="说明"></div><button class="del" data-i="${i}">×</button></div>`
+    ).join("");
+    box.querySelectorAll(".del").forEach((b) => b.onclick = () => { formPhotos.splice(+b.dataset.i, 1); renderPhotos(); saveAddDraft(); });
+    box.querySelectorAll(".pcap").forEach((b) => b.onchange = () => { formPhotos[+b.dataset.i].caption = b.value; saveAddDraft(); });
+  }
+
+  // 草稿自动保存（v2.4：含局/管理处/段 + 4 新维度）
+  const ADD_DRAFT_KEY = "shipin_add_draft_v1";
+  function saveAddDraft() {
+    try {
+      const f = {
+        office: el("fOffice") ? el("fOffice").value : "",
+        mgmt: el("fMgmt") ? el("fMgmt").value : "",
+        bureau: el("fBureau") ? el("fBureau").value : "",
+        section: el("fSection") ? el("fSection").value : "",
+        name: el("fName") ? el("fName").value : "",
+        btype: el("fBtype") ? el("fBtype").value : "",
+        subsys: el("fSubsys") ? el("fSubsys").value : "",
+        midcat: el("fMidcat") ? el("fMidcat").value : "",
+        subcat: el("fSubcat") ? el("fSubcat").value : "",
+        trans: el("fTrans") ? el("fTrans").value : "",
+        station: el("fStation") ? el("fStation").value : "",
+        lon: el("fLon") ? el("fLon").value : "",
+        lat: el("fLat") ? el("fLat").value : "",
+        params: el("fParams") ? el("fParams").value : "",
+        photos: formPhotos.map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "" })),
+      };
+      sessionStorage.setItem(ADD_DRAFT_KEY, JSON.stringify(f));
+    } catch (e) {}
+  }
+  function loadAddDraft() { try { const s = sessionStorage.getItem(ADD_DRAFT_KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+  function clearAddDraft() { try { sessionStorage.removeItem(ADD_DRAFT_KEY); } catch (e) {} }
+  function restoreAddDraft() {
+    const d = loadAddDraft();
+    if (!d) return;
+    formPhotos = (d.photos || []).map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "" }));
+    if (el("fOffice")) el("fOffice").value = d.office || "";
+    if (el("fMgmt")) el("fMgmt").value = d.mgmt || "";
+    if (el("fBureau")) el("fBureau").value = d.bureau || "";
+    if (el("fSection")) el("fSection").value = d.section || "";
+    if (el("fName")) el("fName").value = d.name || "";
+    if (el("fBtype")) el("fBtype").value = d.btype || "";
+    if (el("fSubsys")) el("fSubsys").value = d.subsys || "";
+    if (el("fMidcat")) el("fMidcat").value = d.midcat || "";
+    if (el("fSubcat")) el("fSubcat").value = d.subcat || "";
+    if (el("fTrans")) el("fTrans").value = d.trans || "";
+    if (el("fStation")) el("fStation").value = d.station || "";
+    if (el("fLon")) el("fLon").value = d.lon || "";
+    if (el("fLat")) el("fLat").value = d.lat || "";
+    if (el("fParams")) el("fParams").value = d.params || "";
+    renderPhotos();
+  }
+  // v2.5.0：新增入口按对象类别分流（感知设备 / 水工建筑物 / 命名地点）
+  function openAdd(layer, kind) {
+    layer = layer || LAYER_DEV;
+    editId = null;
+    const title = layer === LAYER_BLD ? (kind === "place" ? "添加地点" : "添加水工建筑物") : "添加监控点";
+    openModal(title, formHtml(null, { layer: layer, kind: kind }), `<button class="btn ghost" id="fCancel">取消</button><button class="btn primary" id="fSave">保存</button>`);
+    bindForm();
+  }
+  function openEdit(id) {
+    editId = id;
+    const r = findRec(id); if (!r) return;
+    openModal("编辑：" + r.name, formHtml(r), `<button class="btn ghost" id="fCancel">取消</button><button class="btn primary" id="fSave">保存</button>`);
+    clearAddDraft(); // 编辑模式不恢复「添加」草稿
+    bindForm();
+  }
+  // 按地名搜坐标（联网，失败静默降级为地图点选）——Q4「地点」建议走搜索选点，避免手填坐标歧义
+  function geocodePlace(kw, done) {
+    const tk = (window.__CONFIG__ && window.__CONFIG__.TIANDITU_TOKEN) || "";
+    if (!tk) return done(null);
+    const url = `https://api.tianditu.gov.cn/geocoder?ds=${encodeURIComponent(JSON.stringify({ keyWord: kw }))}&tk=${tk}`;
+    fetch(url).then((r) => r.json()).then((j) => {
+      const loc = j && j.location && (j.location.lon != null ? j.location : (j.location.lat ? { lon: j.location.lon, lat: j.location.lat } : null));
+      const lon = loc ? parseFloat(loc.lon) : NaN, lat = loc ? parseFloat(loc.lat) : NaN;
+      done(isFinite(lon) && isFinite(lat) ? { lon: lon, lat: lat, addr: (j.location && j.location.address) || "" } : null);
+    }).catch(() => done(null));
+  }
+  function bindForm() {
+    if (formLayer === LAYER_DEV) restoreAddDraft(); // 跨 WebView 重建恢复草稿（仅设备层沿用旧草稿机制）
+    renderPhotos();
+    el("fAddPhoto").onclick = () => { saveAddDraft(); el("fFile").click(); };
+    el("fFile").onchange = (e) => {
+      [...e.target.files].forEach((file, idx) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const cap = ["正面", "背面", "侧面", "全景", "细部"][formPhotos.length] || ("照片" + (formPhotos.length + 1));
+          formPhotos.push({ caption: cap, dataUrl: reader.result });
+          renderPhotos(); saveAddDraft();
+        };
+        reader.readAsDataURL(file);
+      });
+      e.target.value = "";
+    };
+    el("fPick").onclick = () => { togglePick(true); toast("请在地图上点击以确定坐标"); };
+    if (el("fPlaceSearch")) el("fPlaceSearch").onclick = () => {
+      const kw = prompt("输入地名（如：天安门、颐和园）", (el("fName") || {}).value || "");
+      if (!kw) return;
+      toast("正在按地名检索坐标…");
+      geocodePlace(kw, (p) => {
+        if (!p) return toast("地名检索未取到坐标（可能离线或该地名无结果），请改用「在地图上点选坐标」");
+        el("fLon").value = p.lon; el("fLat").value = p.lat;
+        if (el("fName") && !el("fName").value.trim()) el("fName").value = kw;
+        toast("已取到坐标：" + p.lon + ", " + p.lat + (p.addr ? "（" + p.addr + "）" : ""));
+      });
+    };
+    el("fCancel").onclick = () => { clearAddDraft(); closeModal(); };
+    el("fSave").onclick = saveForm;
+    ["fBureau", "fMgmt", "fOffice", "fSection", "fName", "fBtype", "fKind", "fSubsys", "fMidcat", "fSubcat", "fTrans", "fStation", "fLon", "fLat", "fParams"].forEach((id) => { const e = el(id); if (e) e.onchange = e.oninput = saveAddDraft; });
+  }
+  function togglePick(on) {
+    pickMode = on;
+    el("pickmode").classList.toggle("show", on);
+  }
+  function parseParams(txt) {
+    const p = {};
+    txt.split("\n").forEach((ln) => { if (ln.includes(":")) { const a = ln.split(":"); p[a[0].trim()] = a.slice(1).join(":").trim(); } });
+    return p;
+  }
+  async function saveForm() {
+    const name = el("fName").value.trim();
+    const lon = parseFloat(el("fLon").value), lat = parseFloat(el("fLat").value);
+    if (!name) return toast("请填写名称");
+    if (isNaN(lon) || isNaN(lat)) return toast("请填写有效经纬度（可点选）");
+    const isPlace = formLayer === LAYER_BLD && formKind === "place";
+    const params = isPlace
+      ? (el("fParams").value.trim() ? { "备注": el("fParams").value.trim() } : {})
+      : parseParams(el("fParams").value);
+    const btype = isPlace ? "地点" : el("fBtype").value;
+    const cur = editId ? findRec(editId) : null;
+    const rec = {
+      id: editId || (formLayer === LAYER_BLD ? bldIdOf(IO.genId()) : IO.genId()),
+      name, lon: lon, lat: lat, ts: Date.now(),
+      layer: formLayer,
+      kind: formLayer === LAYER_BLD ? (isPlace ? "place" : "building") : undefined,
+      bureau: el("fBureau") ? el("fBureau").value : "",
+      mgmt: el("fMgmt") ? el("fMgmt").value : "",
+      office: el("fOffice") ? el("fOffice").value : "", station: el("fStation") ? el("fStation").value : "", section: el("fSection") ? el("fSection").value : "",
+      btype: btype, subsys: el("fSubsys") ? el("fSubsys").value : "", midcat: el("fMidcat") ? el("fMidcat").value : "", subcat: el("fSubcat") ? el("fSubcat").value : "", trans: el("fTrans") ? el("fTrans").value : "",
+      type: (el("fStation") && el("fStation").value && btype) ? el("fStation").value + "--" + btype : btype,
+      params: params, photos: formPhotos.map((p) => ({ caption: p.caption || "", dataUrl: p.dataUrl || "", full: p.dataUrl || "", thumb: p.dataUrl || "", hash: "" })),
+      base: cur ? cur.base : false, custom: true,
+      description: Object.entries(params).map(([k, v]) => `${k} : ${v}`).join("\n")
+    };
+    if (formLayer === LAYER_BLD) {
+      rec.src = "user";
+      await Store.bld.patch((d) => {
+        if (editId) {
+          const i = (d.added || []).findIndex((a) => a.id === editId);
+          if (i >= 0) d.added[i] = rec; else d.updated[editId] = rec;
+        } else {
+          d.added.push(rec);
+        }
+      });
+      DELTA_BLD = await Store.bld.get();
+    } else {
+      await Store.patch((d) => {
+        if (editId) {
+          // 若是新增记录（在 added 中），更新它；否则记入 updated
+          const i = (d.added || []).findIndex((a) => a.id === editId);
+          if (i >= 0) d.added[i] = rec; else d.updated[editId] = rec;
+        } else {
+          d.added.push(rec);
+        }
+      });
+      DELTA = await Store.get();
+    }
+    merge(); render();
+    clearAddDraft(); closeModal();
+    const what = formLayer === LAYER_BLD ? (isPlace ? "地点" : "水工建筑物") : "监控点";
+    toast((editId ? "已更新" : "已添加") + what);
+    kbLog((editId ? "更新" : "新增") + what, { name });
+  }
+
+  async function del(id) {
+    const rec = findRec(id);
+    const bld = isBld(rec || { layer: (String(id).indexOf(BLD_PREFIX) === 0 ? LAYER_BLD : LAYER_DEV) });
+    if (!confirm("确认删除该" + (bld ? "水工建筑物" : "监控点") + "？")) return;
+    if (bld) {
+      await Store.bld.patch((d) => {
+        const i = (d.added || []).findIndex((a) => a.id === id);
+        if (i >= 0) d.added.splice(i, 1);
+        else { d.deleted = d.deleted || []; d.deleted.push(id); delete d.updated[id]; }
+      });
+      DELTA_BLD = await Store.bld.get();
+    } else {
+      await Store.patch((d) => {
+        const i = (d.added || []).findIndex((a) => a.id === id);
+        if (i >= 0) d.added.splice(i, 1);
+        else { d.deleted = d.deleted || []; d.deleted.push(id); delete d.updated[id]; }
+      });
+      DELTA = await Store.get();
+    }
+    merge(); render();
+    toast("已删除");
+    kbLog("删除" + (bld ? "水工建筑物" : "监控点"), { id: id });
+  }
+
+  // ---------- 批量导入（原生文件夹/zip 逐文件回调 APP.receivePhoto / receiveSheet）----------
+  // bug②修复：新增 mid 形参 —— 导出包 manifest.json 提供的 filename -> 监控点 id，用于确定性绑定
+  function receivePhoto(name, b64, folder, mid) { pendingBatch.photos.push({ name, b64, folder: folder || "", mid: mid || "" }); importCpTouch(); }
+  // bug③修复：新增 bytes 形参 —— xlsx 等二进制表格必须走字节流。
+  // 此前 xlsx 只传空文本给 parseCsvToRecords，解析结果恒为 0 条且不抛错（静默失败）。
+  function receiveSheet(name, text, ext, bytes) { pendingBatch.sheets.push({ name, text, ext, bytes: bytes || null }); importCpTouch(); }
+  function receiveError(msg) { BATCH_STATE.active = false; importCpEnd(); toast("导入出错：" + msg); }
+  function receiveCancel() { if (BATCH_STATE.active) { BATCH_STATE.active = false; importCpEnd(); hideBusy(); pendingBatch.photos = []; pendingBatch.sheets = []; BATCH_ZIP_NAME = ""; toast("已取消导入"); } }
+  function receiveDone(kind) {
+    importCpEnd(); hideBusy();
+    if (kind === "photos") finishBatchPhotos();
+    else if (kind === "sheets") finishBatchSheets();
+  }
+  // 原生异步解压回调（item 1 根因修复：解压/缩略图全在原生线程，JS 仅收齐元数据再匹配）
+  let zipProgOpen = false;
+  window.onUnzipImages = function (ph, cnt, total) {
+    if (!BATCH_STATE.active) return;
+    if (!zipProgOpen) { openZipProgress(); }
+    const prog = el("zipProg"), bar = el("zipBar");
+    if (prog) prog.textContent = `已解压并生成缩略图 ${cnt} / ${total} 张…`;
+    if (bar) bar.style.width = Math.min(100, Math.round((cnt / Math.max(1, total)) * 100)) + "%";
+    // 仅保留轻量元数据：缩略图（小 base64）+ 全图磁盘路径 + 内容哈希；全图按需单张加载
+    pendingBatch.photos.push({ name: ph.name, folder: ph.folder || "", b64: ph.thumb, thumb: ph.thumb, fullPath: ph.fullPath || "", hash: ph.hash || "" });
+    importCpTouch();
+  };
+  window.onUnzipImagesEnd = function (total) {
+    if (!BATCH_STATE.active) return;
+    closeZipProgress();
+    if (pendingBatch.photos.length) finishBatchPhotos();
+    else { BATCH_STATE.active = false; importCpEnd(); toast("压缩包中未找到照片"); }
+  };
+  function openZipProgress() {
+    openModal("正在导入照片", `<div class="hint" id="zipProg">正在解压压缩包并生成缩略图…</div><div class="bar"><div class="bar-fill" id="zipBar" style="width:0%"></div></div>`, `<button class="btn ghost" id="zipCancel">取消</button>`);
+    el("zipCancel").onclick = () => { BATCH_STATE.active = false; closeModal(); toast("已取消导入"); };
+    zipProgOpen = true;
+  }
+  function closeZipProgress() { if (zipProgOpen) { closeModal(); zipProgOpen = false; } }
+  // ---------- 智能模糊匹配工具（② 错字/多字/漏字/部分词；⑥ 文件夹上下文）----------
+  function norm(s) { return (s || "").trim().toLowerCase().replace(/[\s_\-()（）．.]/g, ""); }
+  // 照片名匹配键：去扩展名 + 忽略末尾数字（峰山口1.jpg → 峰山口）
+  function photoKey(name) { return norm((name || "").replace(/\.[^.]+$/, "").replace(/\d+$/, "")); }
+  function levenshtein(a, b) {
+    const m = a.length, n = b.length; if (!m) return n; if (!n) return m;
+    const d = Array.from({ length: m + 1 }, (_, i) => [i].concat(Array(n).fill(0)));
+    for (let j = 0; j <= n; j++) d[0][j] = j;
+    for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+      const c = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+    }
+    return d[m][n];
+  }
+  // ---------- v2.4 zip 三级匹配：压缩包文件名 → zip 内文件夹 → 照片文件名 ----------
+  let BATCH_ZIP_NAME = ""; // 当前导入 zip 的文件名（不含扩展名）；Android 原生经 window.onZipName 下发
+  window.onZipName = function (name) { BATCH_ZIP_NAME = String(name || "").replace(/\.(zip|7z)$/i, ""); };
+  // 压缩包名/文本 → 机构匹配（所→站→段→管理处→局，最具体优先）；如 翠屏山.zip → 优先匹配 翠屏山所
+  function matchOrgScope(text, allowTiers) {
+    if (!text) return null;
+    // 兼容「含路径/扩展名」的压缩包文件名：先取 basename、再去扩展名（如 /x/翠屏山.zip 或 翠屏山.zip → 翠屏山）
+    const base = String(text).split(/[\\/]/).pop() || String(text);
+    const t = norm(base.replace(/\.(zip|7z|rar|tar|gz|tgz)$/i, ""));
+    if (!t) return null;
+    // v2.4.3 层次递进：zip 名命中某级后，zip 内文件夹从「命中级的下一级」向下匹配
+    const TIER_ORDER = ["bureau", "mgmt", "office", "station", "section"];
+    const hit = (val) => {
+      const v = norm(val); if (!v || v.length < 2) return { ok: false, score: 0 };
+      if (v === t) return { ok: true, score: 100 + v.length };
+      if (t.includes(v) || v.includes(t)) return { ok: true, score: 80 + Math.min(v.length, t.length) };
+      if (levenshtein(t, v) <= 1 && Math.max(t.length, v.length) >= 2) return { ok: true, score: 60 + Math.min(v.length, t.length) };
+      return { ok: false, score: 0 };
+    };
+    const allowed = (s) => !allowTiers || allowTiers.indexOf(s) >= 0;
+    const cands = [];
+    if (allowed("office")) for (const off of DIMS.offices) { const h = hit(off); if (h.ok) cands.push({ scope: "office", label: "机构：" + off, val: off, ...h }); }
+    if (allowed("station")) for (const st of DIMS.stations) { const h = hit(st); if (h.ok) cands.push({ scope: "station", label: "库渠：" + st, val: st, ...h }); }
+    if (allowed("section")) for (const sc of DIMS.sections) { const h = hit(sc); if (h.ok) cands.push({ scope: "section", label: "段：" + sc, val: sc, ...h }); }
+    if (allowed("mgmt")) for (const mg of DIMS.mgmts) { const h = hit(mg); if (h.ok) cands.push({ scope: "mgmt", label: "管理处：" + mg, val: mg, ...h }); }
+    if (allowed("bureau")) for (const bu of DIMS.bureaus) { const h = hit(bu); if (h.ok) cands.push({ scope: "bureau", label: "局：" + bu, val: bu, ...h }); }
+    if (!cands.length) return null;
+    const tier = (s) => TIER_ORDER.indexOf(s);
+    // 同分且同名（本数据 office 与 station 常同名，如 翠屏山所）：zip 以「管理所」命名，应锚定 office 层级（标签/下钻才正确）
+    const SCOPE_PREF = { office: 3, station: 2, section: 1, mgmt: 2, bureau: 1 };
+    cands.sort((a, b) => (b.score - a.score) || ((SCOPE_PREF[b.scope] || 0) - (SCOPE_PREF[a.scope] || 0)) || (tier(a.scope) - tier(b.scope)) || (b.val.length - a.val.length));
+    const top = cands[0];
+    let recs;
+    if (top.scope === "office") recs = records.filter((r) => normOffice(orgVal(r, "office")) === top.val);
+    else if (top.scope === "station") recs = records.filter((r) => r.station === top.val);
+    else if (top.scope === "section") recs = records.filter((r) => r.section === top.val);
+    else if (top.scope === "mgmt") recs = records.filter((r) => orgVal(r, "mgmt") === top.val);
+    else recs = records.filter((r) => orgVal(r, "bureau") === top.val);
+    return { label: top.label, recs, tier: top.scope, nextTiers: TIER_ORDER.slice(tier(top.scope) + 1) };
+  }
+  function matchOrgScopeFrom(text, zipScope) {
+    if (!zipScope || !zipScope.nextTiers) return matchOrgScope(text);
+    return matchOrgScope(text, zipScope.nextTiers) || matchOrgScope(text, [zipScope.tier]);
+  }
+  function folderScope(folder, baseRecs) {
+    const base = baseRecs || records;
+    if (!folder) return null;
+    const segs = String(folder).split(/[\\/]/).map((s) => norm(s)).filter(Boolean);
+    if (!segs.length) return null;
+    for (const f of segs) {
+      const off = DIMS.offices.find((o) => { const on = norm(o); return on && (on === f || f.includes(on) || on.includes(f) || levenshtein(f, on) <= 1); });
+      if (off) return { label: "管理所：" + off, recs: base.filter((r) => normOffice(orgVal(r, "office")) === off) };
+    }
+    for (const f of segs) {
+      const bt = DIMS.btypes.find((t) => { const tn = norm(t); return tn && (tn === f || f.includes(tn) || tn.includes(f) || levenshtein(f, tn) <= 1); });
+      if (bt) return { label: "类型：" + bt, recs: base.filter((r) => r.btype === bt) };
+    }
+    return null;
+  }
+  // 智能候选：评分式模糊匹配，返回按评分降序 [{x,score}]；阈值 45
+  function smartCandidates(name, scope) {
+    const base = (scope && scope.recs) || records;
+    const key = photoKey(name); if (!key) return [];
+    const half = key.slice(0, Math.ceil(key.length / 2));
+    const out = [];
+    for (const x of base) {
+      const xn = norm(x.name); if (!xn) continue;
+      let score = 0;
+      if (xn === key) score = 100;
+      else if (key.includes(xn) || xn.includes(key)) score = 85;                        // 包含关系
+      else if (half.length >= 2 && xn.includes(half)) score = 72;                        // 部分关键词对应（峰山口 命中 峰山口大大）
+      else if (key.length >= 2 && xn.includes(key.slice(0, 2))) score = 50;             // 前2字命中（漏字/多字/错字）
+      else { const r = 1 - levenshtein(key, xn) / Math.max(key.length, xn.length, 1); if (r >= 0.6) score = Math.round(40 + r * 40); }
+      if (score >= 45) out.push({ x, score });
+    }
+    out.sort((a, b) => b.score - a.score);
+    return out;
+  }
+  // 照片内容哈希：原生已算（ph.hash），否则回退到 JS 计算（Web/旧数据）
+  async function photoHash(ph) {
+    if (ph.hash) return ph.hash;
+    if (ph.b64) return await shaHexOfB64(ph.b64);
+    return "";
+  }
+  async function finishBatchPhotos() {
+    BATCH_STATE.active = false;
+    // v2.4 三级匹配第一级：zip 文件名 → 机构范围（翠屏山.zip → 翠屏山所）
+    const zipScope = BATCH_ZIP_NAME ? matchOrgScope(BATCH_ZIP_NAME) : null;
+    BATCH_ZIP_NAME = ""; // 一次性消费，防跨批次污染
+    if (zipScope) toast(`压缩包名命中「${zipScope.label}」，优先在该范围内匹配`);
+    const photos = pendingBatch.photos; pendingBatch.photos = [];
+    const hashCache = {};
+    const existingHashes = async (id) => {
+      if (hashCache[id]) return hashCache[id];
+      const r = records.find((x) => x.id === id);
+      const set = new Set();
+      for (const ph of (r ? r.photos || [] : [])) {
+        const h = ph.hash || (ph.dataUrl && ph.dataUrl.startsWith("data:") && ph.dataUrl.includes(";base64,") ? await shaHexOfB64(ph.dataUrl.split(",")[1]) : null);
+        if (h) set.add(h);
+      }
+      hashCache[id] = set; return set;
+    };
+    const auto = {}, ambiguous = [], dupes = [];
+    // 分块匹配（每批 30 张 + 让出主线程），避免大批量导入时 UI 卡死（item 2）
+    const CHUNK = 30;
+    for (let i = 0; i < photos.length; i += CHUNK) {
+      const slice = photos.slice(i, i + CHUNK);
+      for (const ph of slice) {
+        const scope = folderScope(ph.folder, zipScope && zipScope.recs);
+        let cands = smartCandidates(ph.name, scope);
+        // 全局兜底：当前范围（如文件夹上下文）无候选时，跨全部监控点再算一次，避免“名字不完全匹配”直接丢失
+        if (!cands.length && !scope) cands = smartCandidates(ph.name, null).slice(0, 8);
+        const h = await photoHash(ph);
+        const search = cands.length ? cands.map((c) => c.x) : (scope ? scope.recs : records);
+        let dupeId = null;
+        for (const c of search) { if ((await existingHashes(c.id)).has(h)) { dupeId = c.id; break; } }
+        if (dupeId) { dupes.push({ ph, id: dupeId, h }); continue; }
+        // 确定性匹配（bug②修复）：导出包自带 manifest（filename -> 监控点 id），直接自动绑定，跳过模糊匹配与人工选择
+        if (ph.mid) {
+          const rec = records.find((x) => x.id === ph.mid);
+          if (rec) { (auto[rec.id] = auto[rec.id] || []).push(ph); continue; }
+        }
+        // 关键修复：无论是否有名称匹配，都进入人工选择流程（不静默丢弃）；无候选时给“全部监控点”作为候选
+        if (!cands.length) {
+          ambiguous.push({ ph, cs: (scope ? scope.recs : records).map((c) => ({ id: c.id, name: c.name })), scopeLabel: scope ? scope.label : "全部监控点", byContent: true });
+          continue;
+        }
+        if (cands.length === 1 || cands[0].score >= 85) (auto[cands[0].x.id] = auto[cands[0].x.id] || []).push(ph); // 强匹配直接保存
+        else ambiguous.push({ ph, cs: cands.map((c) => ({ id: c.x.id, name: c.x.name, score: c.score })) });
+      }
+      if (i + CHUNK < photos.length) await new Promise((r) => setTimeout(r, 0));
+    }
+    // 内容去重提示（含图片对比）
+    if (dupes.length) {
+      await new Promise((resolve) => {
+        const html = `<div class="hint">以下 ${dupes.length} 张照片<b>内容与已有照片完全相同</b>（不是文件名相同），已展示新图与已有图供对比，请选择处理方式：</div>` +
+          dupes.map((d) => {
+            const r = records.find((x) => x.id === d.id) || {};
+            const phs = (r.photos || []).filter((p) => p.dataUrl && p.dataUrl.startsWith("data:")).slice(0, 3);
+            const newThumb = d.ph.thumb || (d.ph.b64 ? b64ToDataUrl(d.ph.name, d.ph.b64) : "");
+            return `<div class="dp-row"><div class="dp-col"><img src="${newThumb}"><div class="dp-lbl">新导入：${esc(d.ph.name)}</div></div>` +
+              `<div class="dp-col"><img src="${phs[0] || ""}"><div class="dp-lbl">已有：${esc(r.name || "")}</div></div></div>`;
+          }).join("");
+        openModal("照片内容重复", html, `<button class="btn ghost" id="dpSkip">跳过（不导入）</button><button class="btn primary" id="dpOver">覆盖已有</button>`);
+        el("dpSkip").onclick = () => { closeModal(); resolve(); };
+        el("dpOver").onclick = async () => {
+          closeModal();
+          const cache = {};
+          for (const du of dupes) {
+            if (cache[du.id]) continue;
+            const r = records.find((x) => x.id === du.id); const arr = [];
+            if (r) for (let i = 0; i < (r.photos || []).length; i++) {
+              const p = r.photos[i];
+              if (p.dataUrl && p.dataUrl.startsWith("data:") && p.dataUrl.includes(";base64,"))
+                arr.push({ idx: i, hash: await shaHexOfB64(p.dataUrl.split(",")[1]) });
+            }
+            cache[du.id] = arr;
+          }
+          await Store.patch((d) => {
+            d.added = d.added || []; d.updated = d.updated || {};
+            for (const du of dupes) {
+              const arr = cache[du.id] || []; const hit = arr.find((a) => a.hash === du.h); if (!hit) continue;
+              const baseRec = records.find((x) => x.id === du.id) || {};
+              const exist = d.added.find((a) => a.id === du.id); const upd = d.updated[du.id];
+              const cur = (exist || upd || baseRec).photos || [];
+              if (cur[hit.idx]) cur[hit.idx].caption = du.ph.name;
+            }
+          });
+          DELTA = await Store.get(); merge(); render();
+          resolve();
+        };
+      });
+    }
+    // 直接匹配先保存
+    await applyPhotoMatch(auto);
+    const autoTotal = Object.values(auto).reduce((a, b) => a + b.length, 0);
+    const cleanInboxNow = () => { if (window.AndroidBridge && window.AndroidBridge.cleanInbox) window.AndroidBridge.cleanInbox(); };
+    if (ambiguous.length) {
+      openPhotoChoice(ambiguous, async (userMap, skipped) => {
+        await applyPhotoMatch(userMap);
+        const userTotal = Object.values(userMap).reduce((a, b) => a + b.length, 0);
+        finalizePhotoImport(Object.keys(auto).length, autoTotal + userTotal, ambiguous.length, skipped, dupes.length);
+        cleanInboxNow(); // 导入完成：清理 inbox/uz_* 临时目录（item 2 根因防护之三）
+      });
+    } else {
+      finalizePhotoImport(Object.keys(auto).length, autoTotal, 0, [], dupes.length);
+      cleanInboxNow();
+    }
+  }
+  // 将 {监控点id:[photo...]} 合并进 Store 增量；caption 统一改为「监控点名+照片+序号」，确保监控点稳定读到
+  async function applyPhotoMatch(map) {
+    if (!Object.keys(map).length) return;
+    await Store.patch((d) => {
+      d.added = d.added || []; d.updated = d.updated || {};
+      for (const id in map) {
+        const phs = map[id];
+        const rec = records.find((x) => x.id === id) || {};
+        const recName = rec.name || "监控点";
+        const exist = d.added.find((a) => a.id === id);
+        const upd = d.updated[id];
+        const cur = (exist || upd || rec).photos || [];
+        let seq = cur.length; // 顺序号从现有张数之后续编
+        const newPhotos = phs.map((ph) => {
+          seq += 1;
+          // 全图从 inbox 临时目录持久化到 app 私有 photos 目录（cleanInbox 不会误删）；dataUrl 仅存缩略图，全图按需单张加载
+          let fullPath = "";
+          if (ph.fullPath && window.AndroidBridge && window.AndroidBridge.persistImage) {
+            const p = window.AndroidBridge.persistImage(ph.fullPath);
+            if (p) fullPath = p;
+          }
+          const dataUrl = ph.thumb || (ph.b64 ? b64ToDataUrl(ph.name, ph.b64) : "");
+          // 关键修复（最佳匹配保存）：Web 导入通道经 receivePhoto 传入的是 full 原图 b64，必须据此补 full，
+          // 否则仅存缩略图、放大/导出时缺原图，表现为"照片没保存/看不清"
+          const full = ph.full || (ph.b64 ? "data:image/jpeg;base64," + ph.b64 : "") || fullPath || "";
+          return { caption: `${recName}照片${seq}`, dataUrl, fullPath, full, hash: ph.hash || "" };
+        });
+        const merged = cur.concat(newPhotos);
+        if (exist) { const i = d.added.findIndex((a) => a.id === id); d.added[i] = Object.assign({}, d.added[i], { photos: merged }); }
+        else d.updated[id] = Object.assign({}, rec, upd || {}, { photos: merged });
+      }
+    });
+    DELTA = await Store.get(); merge(); render();
+  }
+  // 多监控点/无匹配时让用户<b>单选</b>所属监控点（每张照片只能属于一个监控点；默认勾选最可能对，可改或跳过）
+  function openPhotoChoice(list, onConfirm) {
+    const groups = list.map((it, idx) => {
+      const scopeNote = it.scopeLabel
+        ? `<div class="pc-scope">📁 上下文：${esc(it.scopeLabel)}${it.byContent ? "（未匹配到名称，请按照片内容选择对应监控点；不确定可点「跳过」）" : ""}</div>`
+        : "";
+      const thumb = it.ph.thumb || (it.ph.b64 ? b64ToDataUrl(it.ph.name, it.ph.b64) : "");
+      const def = it.cs[0] ? it.cs[0].id : ""; // 默认最可能
+      const opts = it.cs.map((c) => {
+        const rec = records.find((x) => x.id === c.id) || {};
+        const t = (rec.photos || []).find((p) => p.dataUrl && p.dataUrl.startsWith("data:")) || {};
+        const checked = c.id === def ? "checked" : "";
+        return `<label class="ex-item"><input type="radio" name="pc-${idx}" class="pc-rb" data-pi="${idx}" value="${c.id}" ${checked}><img class="pc-th" src="${t.dataUrl || ""}"><span>${esc(c.name)}${c.score != null ? ` <em class="sc">匹配度 ${c.score}</em>` : ""}</span></label>`;
+      }).join("");
+      const skipChk = def ? "" : "checked"; // 无任何候选时默认跳过
+      return `<div class="phchoice">
+        <div class="pc-title">📷 ${esc(it.ph.name)} <small>请选择所属监控点（单选）</small></div>
+        <div class="pc-thumb"><img src="${thumb}" alt="导入照片"></div>
+        ${scopeNote}
+        <div class="pc-cands">${opts}
+          <label class="ex-item skip"><input type="radio" name="pc-${idx}" class="pc-rb" data-pi="${idx}" value="__skip__" ${skipChk}><span>⏭ 跳过这张（不导入）</span></label>
+        </div>
+      </div>`;
+    }).join("");
+    openModal("选择照片所属监控点", `<div class="hint">每张照片只能属于一个监控点；系统已默认勾选最可能项，请逐张确认或修改。点「确认导入」即按所选绑定；未选「跳过」的照片将被导入到所选监控点。</div><div class="filelist" style="max-height:46vh;overflow:auto">${groups}</div>`,
+      `<button class="btn ghost" id="pcAllDef">全部按默认</button><button class="btn ghost" id="pcCancel">取消</button><button class="btn primary" id="pcOk">确认导入</button><button class="btn ghost" id="pcExit">退出</button>`);
+    const collect = () => {
+      const map = {}; const skipped = [];
+      list.forEach((it, idx) => {
+        const sel = document.querySelector(`input[name="pc-${idx}"]:checked`);
+        if (!sel || sel.value === "__skip__") { skipped.push(it.ph.name); return; }
+        (map[sel.value] = map[sel.value] || []).push(it.ph);
+      });
+      return { map, skipped };
+    };
+    const done = (map, skipped) => { closeModal(); onConfirm(map, skipped); };
+    el("pcAllDef").onclick = () => { const { map, skipped } = collect(); done(map, skipped); };
+    el("pcCancel").onclick = () => done({}, list.map((it) => it.ph.name));
+    el("pcExit").onclick = () => done({}, list.map((it) => it.ph.name));
+    el("pcOk").onclick = () => { const { map, skipped } = collect(); done(map, skipped); };
+  }
+  function finalizePhotoImport(autoCnt, total, ambiguousCnt, skipped, dupCnt) {
+    let msg = `照片导入完成：自动匹配 ${autoCnt} 个监控点`;
+    if (ambiguousCnt) msg += `（另有 ${ambiguousCnt} 张已逐张确认所属）`;
+    msg += `，共新增 ${total} 张`;
+    if (dupCnt) msg += `；内容重复跳过/覆盖 ${dupCnt} 张`;
+    if (skipped && skipped.length) msg += `；已跳过 ${skipped.length} 张（未选监控点）`;
+    toast(msg);
+    if (skipped && skipped.length) {
+      openModal("部分照片已跳过", `<div class="hint">以下 ${skipped.length} 张照片未选择所属监控点，已跳过未导入：</div><div class="filelist">${skipped.slice(0, 80).map((n) => `<div class="fi">${esc(n)}</div>`).join("")}</div>`, `<button class="btn ghost" onclick="APP.close()">知道了</button>`);
+    }
+  }
+  async function finishBatchSheets() {
+    BATCH_STATE.active = false;
+    const sheets = pendingBatch.sheets; pendingBatch.sheets = [];
+    if (!sheets.length) { toast("未读取到可导入的表格文件"); return; }
+    const recs = []; const errors = [];
+    for (const s of sheets) {
+      try {
+        const ext = (s.ext || "").toLowerCase();
+        let rs = [];
+        if (ext === "csv" || ext === "tsv" || ext === "txt") rs = IO.parseCsvToRecords(s.text);
+        else if (ext === "kml") rs = IO.parseKmlToRecords(s.text);
+        else if (ext === "gpx") rs = IO.parseGpxToRecords(s.text);
+        else if (ext === "json") rs = IO.parseJsonToRecords(s.text);
+        // bug③修复：xlsx 走二进制解析器（原先误用 CSV 解析器 + 空文本 -> 静默 0 条）
+        else if (ext === "xlsx") {
+          if (!s.bytes || !s.bytes.length) throw new Error("xlsx 需以二进制读取，但当前导入通道未提供字节流");
+          rs = await IO.parseXlsxToRecords(s.bytes);
+        }
+        else if (ext === "xls") rs = IO.parseXlsToRecords(s.text || "");
+        else throw new Error("不支持的表格扩展名：" + (ext || "(空)"));
+        recs.push(...rs);
+      } catch (e) { errors.push(s.name + "：" + e.message); }
+    }
+    if (!recs.length) { toast("未解析到任何监控点" + (errors.length ? "；错误：" + errors.join("；") : "")); return; }
+    await Store.patch((d) => {
+      d.added = d.added || []; d.updated = d.updated || {};
+      for (const r of recs) {
+        const exist = BASE.find((b) => b.id === r.id) || d.added.find((a) => a.id === r.id);
+        if (exist) d.updated[r.id] = r; else d.added.push(r);
+      }
+    });
+    DELTA = await Store.get(); merge(); render();
+    toast(`表格导入完成：${recs.length} 个监控点` + (errors.length ? `；${errors.length} 个文件解析失败` : ""));
+  }
+  async function startBatchImport(kind, mode) {
+    await importCpResumePrompt(kind); // 若上次导入被中断，提示用户（item 1/2 续传）
+    // 大文件流量提醒（items 1/2：文件夹/zip 可能含大量照片 >3GB）
+    if (mode === "folder" || mode === "zip") {
+      const go = await confirmLargeTransfer("批量导入（可能含大量文件）", 0); // 本地读取，无流量；无尺寸不打扰
+      if (!go) { importCpEnd(); return; }
+    }
+    pendingBatch[kind === "photos" ? "photos" : "sheets"] = [];
+    BATCH_ZIP_NAME = ""; // v2.4：每批开始重置压缩包名（zip 通道随后会重新设置）
+    BATCH_STATE.active = true; BATCH_STATE.kind = kind;
+    importCpStart(kind);
+    closeModal();
+    if (mode === "folder" && window.AndroidBridge && window.AndroidBridge.pickImportFolder) window.AndroidBridge.pickImportFolder(kind);
+    else if (mode === "zip" && window.AndroidBridge && window.AndroidBridge.pickImportZip) window.AndroidBridge.pickImportZip(kind);
+    else if (mode === "zip") { if (kind === "photos") webkitZipPhotos(); else webkitZipSheets(); }
+    else if (kind === "photos") { if (mode === "files") webkitMultiPhotos(); else webkitDirPhotos(); }
+    else { if (mode === "files") webkitMultiSheets(); else webkitDirSheets(); }
+    toast(mode === "folder" ? "请在系统选择器中选取文件夹" : (mode === "zip" ? "请在系统选择器中选取 zip 压缩包" : "请在系统选择器中选取文件"));
+  }
+  function webkitDirPhotos() {
+    pickFiles({ webkitdirectory: true, multiple: true, onPick: (files) => {
+      const fs = files.filter((f) => /\.(jpe?g|png|gif|bmp|webp)$/i.test(f.name));
+      if (!fs.length) { BATCH_STATE.active = false; return toast("未选择照片文件"); }
+      let n = 0;
+      fs.forEach((file) => {
+        const r = new FileReader();
+        const rel = file.webkitRelativePath || file.name;
+        const folder = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+        r.onload = () => { receivePhoto(file.name, (r.result.split(",")[1]) || "", folder); if (++n === fs.length) receiveDone("photos"); };
+        r.readAsDataURL(file);
+      });
+    }});
+  }
+  function webkitMultiPhotos() {
+    pickFiles({ multiple: true, accept: "image/*", onPick: (files) => {
+      if (!files.length) { BATCH_STATE.active = false; return; }
+      let n = 0;
+      files.forEach((file) => {
+        const r = new FileReader();
+        r.onload = () => { receivePhoto(file.name, (r.result.split(",")[1]) || ""); if (++n === files.length) receiveDone("photos"); };
+        r.readAsDataURL(file);
+      });
+    }});
+  }
+  async function webkitZipPhotos() {
+    // .7z 无标准 MIME 映射，Android 选择器可能隐藏；*/* 兜底保证可选，zip/7z 由解压端识别
+    pickFiles({ accept: ".zip,.7z,application/zip,application/x-7z-compressed,application/x-zip-compressed,*/*", onPick: async (files) => {
+      try {
+        const f = files[0]; if (!f) return;
+        BATCH_ZIP_NAME = String(f.name || "").replace(/\.(zip|7z)$/i, ""); // v2.4 三级匹配：记录压缩包名（→ 机构范围）
+        // 7z 浏览器原生无法解压：明确报错降级，不静默
+        if (/\.7z$/i.test(f.name)) { BATCH_STATE.active = false; return toast("7z 暂不支持浏览器原生解压，请改用 zip 压缩包（照片匹配逻辑不变）"); }
+        // ① 体积预检：超 1.2GB 直接拦截并引导分卷（item 1 根因防护）
+        if (zipSizeRefuse(f)) return;
+        // ② 较大包二次确认（300MB~1.2GB），告知将流式处理
+        if (f.size > 300 * 1048576) {
+          const go = await new Promise((res) => {
+            openModal("大压缩包导入确认",
+              `<div class="hint" style="color:#e67e22">⚠️ 压缩包约 <b>${Math.round(f.size / 1048576)} MB</b>，较大。将流式处理并显示进度，但低端设备仍可能较慢；建议 ≤500MB 分卷更稳。</div>`,
+              `<button class="btn ghost" id="zCancel">取消</button><button class="btn primary" id="zGo">仍要继续（流式）</button>`);
+            el("zCancel").onclick = () => { closeModal(); res(false); };
+            el("zGo").onclick = () => { closeModal(); res(true); };
+          });
+          if (!go) { BATCH_STATE.active = false; return; }
+        }
+        // ③ 进度弹窗 + 流式解压：逐张读取、立即转码入队、释放字节、让出主线程，避免卡死/死机
+        openModal("正在导入照片",
+          `<div class="hint" id="zipProg">正在读取压缩包…</div><div class="bar"><div class="bar-fill" id="zipBar" style="width:0%"></div></div>`,
+          `<button class="btn ghost" id="zipCancel">取消</button>`);
+        const prog = el("zipProg"), bar = el("zipBar");
+        let cancelled = false;
+        el("zipCancel").onclick = () => { cancelled = true; closeModal(); BATCH_STATE.active = false; toast("已取消导入"); };
+        const buf = await f.arrayBuffer();
+        if (cancelled) return;
+        // bug②修复：先扫一遍 manifest.json（若存在）—— 导出包自带 filename -> 监控点 id 映射，导入时确定性自动匹配
+        const mMap = {};
+        await IO.unzipStream(buf, async (name, bytes) => {
+          if (/^manifest\.json$/i.test(name)) {
+            try { const obj = JSON.parse(new TextDecoder().decode(bytes)); (obj.items || []).forEach((it) => { if (it && it.file) mMap[it.file] = it; }); } catch (e) {}
+          }
+        });
+        const total = IO.unzipCount(buf);
+        let done = 0;
+        await IO.unzipStream(buf, async (name, bytes) => {
+          if (cancelled) return;
+          if (!/\.(jpe?g|png|gif|bmp|webp)$/i.test(name)) return;
+          const folder = name.includes("/") ? name.slice(0, name.lastIndexOf("/")) : "";
+          const m = mMap[name];
+          receivePhoto(name, IO.bytesToB64(bytes), folder, m ? m.id : undefined); // bytes 为当前条目视图，立即转 base64 后本函数返回即被释放
+          done++;
+          if ((done & 15) === 0 || done === total) {
+            prog.textContent = `已处理 ${done} / ${total} 张照片…`;
+            bar.style.width = Math.min(100, Math.round(done / Math.max(1, total) * 100)) + "%";
+            await new Promise((r) => setTimeout(r, 0)); // 让出主线程，保持 UI 响应（防 ANR 杀进程）
+          }
+        });
+        if (cancelled) return;
+        closeModal();
+        if (pendingBatch.photos.length) receiveDone("photos");
+        else { BATCH_STATE.active = false; importCpEnd(); toast("压缩包中未找到照片"); }
+      } catch (e) { BATCH_STATE.active = false; importCpEnd(); closeModal(); toast("压缩包读取失败：" + e.message); }
+    }});
+  }
+  // bug③修复：统一表格读取器 —— xlsx 用 readAsArrayBuffer 走字节流，其余按文本；
+  // 读取失败也要推进计数并提示，避免 n 永远到不了 files.length 导致导入状态卡死（静默挂死）。
+  function readSheetFile(f, done) {
+    const ext = (f.name.split(".").pop() || "").toLowerCase();
+    const r = new FileReader();
+    r.onerror = () => { toast("读取失败：" + f.name); done(); };
+    if (ext === "xlsx") {
+      r.onload = () => { receiveSheet(f.name, "", ext, new Uint8Array(r.result)); done(); };
+      r.readAsArrayBuffer(f);
+    } else {
+      r.onload = () => { receiveSheet(f.name, r.result, ext); done(); };
+      r.readAsText(f);
+    }
+  }
+  function webkitDirSheets() {
+    pickFiles({ webkitdirectory: true, multiple: true, onPick: (files) => {
+      const fs = files.filter((f) => /\.(csv|tsv|txt|kml|gpx|json|xls|xlsx)$/i.test(f.name));
+      if (!fs.length) { BATCH_STATE.active = false; return toast("未选择表格文件"); }
+      let n = 0;
+      const bump = () => { if (++n === fs.length) receiveDone("sheets"); };
+      fs.forEach((file) => readSheetFile(file, bump));
+    }});
+  }
+  function webkitMultiSheets() {
+    pickFiles({ multiple: true, onPick: (files) => {
+      const fs = files.filter((f) => /\.(csv|tsv|txt|kml|gpx|json|xls|xlsx)$/i.test(f.name));
+      if (!fs.length) { BATCH_STATE.active = false; return; }
+      let n = 0;
+      const bump = () => { if (++n === fs.length) receiveDone("sheets"); };
+      fs.forEach((file) => readSheetFile(file, bump));
+    }});
+  }
+  async function webkitZipSheets() {
+    pickFiles({ accept: ".zip,.7z,application/zip,application/x-7z-compressed,application/x-zip-compressed,*/*", onPick: async (files) => {
+      try {
+        const f = files[0]; if (!f) return;
+        if (/\.7z$/i.test(f.name)) { BATCH_STATE.active = false; return toast("7z 暂不支持浏览器原生解压，请改用 zip 压缩包"); }
+        if (zipSizeRefuse(f)) return; // 超大压缩包预检（与照片一致）
+        const buf = await f.arrayBuffer();
+        const files = await IO.unzip(new Uint8Array(buf));
+        let cnt = 0;
+        for (const name of Object.keys(files)) {
+          if (!/\.(csv|tsv|txt|kml|gpx|json|xls|xlsx)$/i.test(name)) continue;
+          const ext = (name.split(".").pop() || "").toLowerCase();
+          // bug③修复：xlsx 传字节流（原先固定传空串 -> 解析 0 条且无任何报错）
+          if (ext === "xlsx") receiveSheet(name, "", ext, files[name]);
+          else receiveSheet(name, new TextDecoder().decode(files[name]), ext);
+          cnt++;
+        }
+        if (cnt) receiveDone("sheets"); else { BATCH_STATE.active = false; toast("压缩包中未找到表格"); }
+      } catch (e) { BATCH_STATE.active = false; toast("压缩包读取失败：" + e.message); }
+    }});
+  }
+  function batchImportMenu(kind) {
+    const isPhoto = kind === "photos";
+    const html = `<div class="hint">${isPhoto ? "从手机文件夹或压缩包(zip)批量导入照片，导入后自动按「照片文件名→监控点名称」智能匹配并保存。" : "从手机文件夹或压缩包批量导入监控点信息（支持 csv/tsv/txt/kml/gpx/json/xls/xlsx），导入后按经纬度定位，无经纬度则按名称定位。"}</div>
+      <div class="field" style="margin-top:12px"><label>选择来源（本地）</label>
+        <div class="src-grid">
+          <div class="src-card" id="biFolder"><div class="sc-ico">📁</div><div class="sc-lbl">手机文件夹</div><div class="sc-sub">照片/表格</div></div>
+          <div class="src-card" id="biZip"><div class="sc-ico">🗜️</div><div class="sc-lbl">压缩包</div><div class="sc-sub">zip（推荐）</div></div>
+          <div class="src-card" id="biFiles"><div class="sc-ico">📄</div><div class="sc-lbl">多个文件</div><div class="sc-sub">浏览器</div></div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:6px"><label>选择来源（网盘）</label>
+        <div class="src-grid two">
+          <div class="src-card net" id="biBaidu"><div class="sc-ico">☁️</div><div class="sc-lbl">百度网盘</div></div>
+          <div class="src-card net" id="biQuark"><div class="sc-ico">☁️</div><div class="sc-lbl">夸克网盘</div></div>
+        </div>
+      </div>
+      <div class="hint">网盘导入需在 Android APP 内已配置网盘凭证；网页版未集成时，请先通过网盘 App 把文件导出到本地，再选「手机文件夹」导入。压缩包仅支持 zip（7z 浏览器无法原生解压，会自动提示改用 zip）。</div>`;
+    openModal(isPhoto ? "批量导入照片" : "批量导入监控点", html, `<button class="btn ghost" onclick="APP.close()">取消</button>`);
+    el("biFolder").onclick = () => startBatchImport(kind, "folder");
+    el("biZip").onclick = () => startBatchImport(kind, "zip");
+    el("biFiles").onclick = () => startBatchImport(kind, "files");
+    el("biBaidu").onclick = () => importFromNetdisk("baidu", kind);
+    el("biQuark").onclick = () => importFromNetdisk("quark", kind);
+  }
+  // 网盘导入（与"网盘导入导出"共用桥接；网页版无桥接时明确降级，不静默失败）
+  function importFromNetdisk(prov, kind) {
+    if (window.AndroidBridge && window.AndroidBridge.netdiskImport) {
+      window.AndroidBridge.netdiskImport(prov, kind || "photos");
+      closeModal();
+      toast(`已请求从${prov === "baidu" ? "百度" : "夸克"}网盘导入，请在网盘选择器中选择文件`);
+    } else {
+      toast("当前网页版未集成网盘授权：① 在 Android APP 内使用本功能；或 ② 用网盘 App 把文件导出到本地后选「本地文件夹」导入");
+    }
+  }
+  function exportPhotosMenu() {
+    const hasFilter = filter.office.length || filter.btype.length || filter.q;
+    const recsAll = records, recsFiltered = records.filter(passFilter);
+    const html = `<div class="hint" id="phStat" style="background:#eef4ff;color:#1e40af;border-radius:8px;padding:8px 10px;margin-bottom:10px">正在统计…</div>\n<div class="field"><label>导出范围</label>
+        <select id="phScope"><option value="all">全部监控点（${recsAll.length}）</option>${hasFilter ? `<option value="filtered" selected>当前筛选（${recsFiltered.length}）</option>` : ""}</select></div>
+      <div class="field"><label>压缩格式</label>
+        <select id="phFmt"><option value="zip">zip（推荐，通用）</option><option value="7z">7z（当前环境降级为 zip）</option></select></div>
+      <div class="field"><label>导出目标</label>
+        <select id="phTarget">
+          <option value="download">本地下载（zip 文件）</option>
+          <option value="folder">本地文件夹（Android 真机）</option>
+          <option value="baidu">百度网盘</option>
+          <option value="quark">夸克网盘</option>
+          <option value="share">分享给微信 / 飞书 / QQ</option>
+        </select></div>
+      ${DIMS.offices.length ? `<div class="field"><label>按管理所（默认全选 · 9 所完整名单；自动匹配所选范围）</label><div class="ofc-list" id="phOffices" style="max-height:120px;overflow:auto;display:flex;flex-wrap:wrap;gap:6px 14px">${DIMS.offices.map((o) => `<label class="ofc"><input type="checkbox" class="ofc-cb" value="${esc(o)}" checked>${esc(o)}</label>`).join("")}</div></div>` : ""}
+      <div class="field"><label>文件名组合段（点选即重生成文件名，可再手改；默认 所）</label>
+        <div class="chips" id="phSegs">
+          <span class="chip" data-seg="bureau">局</span><span class="chip" data-seg="mgmt">管理处</span>
+          <span class="chip on" data-seg="office">所</span><span class="chip" data-seg="station">站</span>
+          <span class="chip" data-seg="section">段</span><span class="chip" data-seg="name">名称</span>
+        </div></div>
+      <div class="field"><label>文件夹层次（可选 局/管理处/所/站/段，默认 所；留一所则按所分目录）</label>
+        <div class="chips" id="phFold">
+          <span class="chip" data-seg="bureau">局</span><span class="chip" data-seg="mgmt">管理处</span>
+          <span class="chip on" data-seg="office">所</span><span class="chip" data-seg="station">站</span>
+          <span class="chip" data-seg="section">段</span>
+        </div></div>
+      <div class="field"><label>压缩包文件名（不含扩展名，系统自动加 .zip；留空则按组合段/管理所命名）</label><input id="phFname" class="inp" value="监控点照片"></div>
+      <div class="hint">照片按所选层次分文件夹（默认「管理所 / 监控点_序号.扩展名」）；压缩包内含 manifest.json，可<b>确定性重新导入</b>（自动绑定到原监控点，无需逐张人工选择）。</div>`;
+    openModal("导出照片", html, `<button class="btn ghost" id="phCancel">取消</button><button class="btn primary" id="phGo">导出</button>`);
+    el("phCancel").onclick = closeModal;
+    // ---------- v2.4.9-A 实时统计：将导出 N 个建筑物 / M 张照片（随范围与管理所勾选联动）----------
+    const phHasSrc = (p) => !!(p && (p.full || p.dataUrl || p.thumb || p.b64));
+    const phCount = (rs) => rs.reduce((n, r) => n + ((r.photos || []).filter(phHasSrc).length), 0);
+    const phStatUpdate = () => {
+      const box = document.getElementById("phStat"); if (!box) return;
+      const scopeEl = document.getElementById("phScope");
+      let rs = (scopeEl && scopeEl.value === "filtered") ? recsFiltered : recsAll;
+      const cbs = document.querySelectorAll("#phOffices .ofc-cb");
+      if (cbs && cbs.length) {
+        const checked = []; for (let i = 0; i < cbs.length; i++) if (cbs[i].checked) checked.push(cbs[i].value);
+        if (checked.length && checked.length < cbs.length) {
+          const want = checked.map((o) => (typeof normOffice === "function" ? normOffice(o) : o));
+          rs = rs.filter((r) => {
+            const v = typeof normOffice === "function" ? normOffice((typeof orgVal === "function" ? orgVal(r, "office") : r.office)) : r.office;
+            return want.indexOf(v) >= 0;
+          });
+        }
+      }
+      box.innerHTML = "将导出：<b>" + rs.length + "</b> 个对象 / <b>" + phCount(rs) + "</b> 张照片" +
+        (rs.length ? "" : "（可切换导出范围或勾选更多管理所）");
+    };
+    const phScopeEl = document.getElementById("phScope"); if (phScopeEl) phScopeEl.onchange = phStatUpdate;
+    const phCbs = document.querySelectorAll("#phOffices .ofc-cb");
+    for (let i = 0; i < phCbs.length; i++) phCbs[i].onchange = phStatUpdate;
+    phStatUpdate();
+    // ---------- /v2.4.9-A ----------
+
+    // 组合段（v2.4）：文件名 + 文件夹层次
+    const segValOf = (r, seg) => seg === "bureau" ? orgVal(r, "bureau") : seg === "mgmt" ? orgVal(r, "mgmt")
+      : seg === "office" ? (normOffice(orgVal(r, "office")) || "未分类所") : seg === "station" ? (r.station || "")
+      : seg === "section" ? (r.section || "") : (r.name || "");
+    const bindSegChips = (boxId, inputId, suffix) => {
+      const box = el(boxId); if (!box) return;
+      box.querySelectorAll(".chip").forEach((c) => c.onclick = () => {
+        c.classList.toggle("on");
+        const segs = [...box.querySelectorAll(".chip.on")].map((x) => x.dataset.seg);
+        if (!segs.length || !inputId) return;
+        const src0 = (el("phScope") && el("phScope").value === "filtered") ? recsFiltered : recsAll;
+        const safeSeg = (v) => (v || "").replace(/[\\/:*?"<>|\n\r]+/g, "_").trim();
+        const parts = segs.map((sg) => sg === "name" ? (src0.length === 1 ? safeSeg(src0[0].name) : src0.length + "个监控点") : safeSeg(segValOf(src0[0], sg))).filter(Boolean);
+        if (parts.length) el(inputId).value = parts.join("_") + suffix;
+      });
+    };
+    bindSegChips("phSegs", "phFname", "");
+    bindSegChips("phFold", null, null);
+    el("phGo").onclick = () => {
+      // v2.4：机构选项按所选范围自动匹配（全选时用范围机构子集覆盖）
+      const ofcBox = el("phOffices");
+      let offices = null;
+      if (ofcBox) {
+        const all = [...ofcBox.querySelectorAll(".ofc-cb")];
+        const checked = all.filter((c) => c.checked).map((c) => c.value);
+        if (checked.length === all.length && all.length > 0) {
+          const src = el("phScope").value === "filtered" ? recsFiltered : recsAll;
+          offices = [...new Set(src.map((r) => normOffice(r.office)).filter(Boolean))];
+          all.forEach((c) => c.checked = offices.includes(c.value));
+        } else { offices = checked; }
+      }
+      const fsegs = el("phSegs") ? [...el("phSegs").querySelectorAll(".chip.on")].map((c) => c.dataset.seg) : null;
+      const dsegs = el("phFold") ? [...el("phFold").querySelectorAll(".chip.on")].map((c) => c.dataset.seg) : null;
+      doExportPhotos(el("phScope").value === "filtered" ? recsFiltered : recsAll, { format: el("phFmt").value, target: el("phTarget").value, fname: el("phFname").value.trim(), fnameSegs: fsegs, folderSegs: dsegs, offices });
+    };
+  }
+  async function doExportPhotos(recs, opts) {
+    opts = opts || {};
+    // ---------- v2.4.9-B 管理所过滤双向归一化 ----------
+    if (opts.offices && opts.offices.length) {
+      const want = opts.offices.map((o) => normOffice(o));
+      recs = recs.filter((r) => {
+        const v = normOffice(typeof orgVal === "function" ? orgVal(r, "office") : r.office);
+        return want.indexOf(v) >= 0 || (Array.isArray(r.office) && r.office.some((x) => want.indexOf(normOffice(x)) >= 0));
+      });
+    }
+    // ---------- /v2.4.9-B ----------
+    const files = [];
+    const manifestItems = []; // bug②修复：记录 filename -> 监控点 id 映射，供确定性重新导入
+    const safe = (s) => (s || "监控点").replace(/[\\/:*?"<>|\n\r]+/g, "_").slice(0, 40);
+    const officeSafe = (s) => (normOffice(s) || "未分类所").replace(/[\\/:*?"<>|\n\r]+/g, "_").slice(0, 30);
+    // v2.4 组合段：文件夹层次（folderSegs，默认所）+ 文件名段（fnameSegs，仅当输入框为空时兜底）
+    const segValOf = (r, seg) => seg === "bureau" ? orgVal(r, "bureau") : seg === "mgmt" ? orgVal(r, "mgmt")
+      : seg === "office" ? officeSafe(r.office) : seg === "station" ? (r.station || "")
+      : seg === "section" ? (r.section || "") : (r.name || "");
+    const segSafe = (v) => (v || "").replace(/[\\/:*?"<>|\n\r]+/g, "_").trim();
+    const folderPrefix = (r) => {
+      let segs = (opts.folderSegs && opts.folderSegs.length) ? opts.folderSegs : ["office"];
+      let parts = segs.map((sg) => segSafe(segValOf(r, sg))).filter(Boolean);
+      if (!parts.length) parts = [officeSafe(r.office)]; // 兜底：勾选段全为空值时回落到管理所
+      return parts.join("/") + "/";
+    };
+    for (const r of recs) {
+      const phs = r.photos || [];
+      for (let i = 0; i < phs.length; i++) {
+        const ph = phs[i];
+        let b64 = "", ext = "jpg";
+        // 优先原生按需加载全图（新导入：dataUrl 仅缩略图）；否则回退 dataUrl（旧数据/Web）
+        if (ph.fullPath && window.AndroidBridge && window.AndroidBridge.loadFullImage) {
+          const full = window.AndroidBridge.loadFullImage(ph.fullPath);
+          if (full && full.startsWith("data:")) {
+            const comma = full.indexOf(",");
+            b64 = full.substring(comma + 1);
+            const mime = full.substring(5, full.indexOf(";")).replace("/", ".");
+            ext = mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("webp") ? "webp" : "jpg";
+          }
+        }
+        if (!b64) {
+          // ---------- v2.4.9-C 多字段兜底：full / dataUrl / thumb / b64 任一可用即导出 ----------
+          const src = [ph.dataUrl, ph.full, ph.thumb].filter((s) => s && String(s).startsWith("data:"))[0] || "";
+          if (src) {
+            const comma = src.indexOf(",");
+            b64 = src.substring(comma + 1);
+            const mime = src.substring(5, src.indexOf(";")).replace("/", ".");
+            ext = mime.includes("png") ? "png" : mime.includes("gif") ? "gif" : mime.includes("webp") ? "webp" : "jpg";
+          } else if (ph.b64) { b64 = ph.b64; ext = "jpg"; }
+          else continue;
+          // ---------- /v2.4.9-C ----------
+        }
+        // 按所选文件夹层次分目录（v2.4：默认 管理所/，可选 局/管理处/所/站/段 组合）：层次/监控点_序号.ext
+        const phName = folderPrefix(r) + `${safe(r.name)}_${i + 1}.${ext}`;
+        files.push({ name: phName, b64 });
+        manifestItems.push({ file: phName, id: r.id, name: r.name, office: normOffice(r.office), index: i + 1 });
+      }
+    }
+    if (!files.length) {
+      closeModal();
+      // v2.2 问题①根因防护：Web/PWA/Win/UOS 上"没有可导出照片"通常是导入未成功（照片数据从未落库），而非导出代码缺路径——给可操作指引而非只报一句。
+      const plat = (window.AndroidBridge && window.AndroidBridge.exportFilesToTree) ? "安卓" : "当前平台（统信 UOS / Web / PWA / Win11）";
+      return openModal("没有可导出照片",
+        `<div class="hint">所选范围内没有照片数据（范围内 <b>${recs.length}</b> 个对象，其中 <b>${recs.filter((r) => (r.photos || []).length).length}</b> 个带照片记录）。</div>
+         <div class="hint">常见原因：在本平台<b>尚未成功导入照片</b>（照片数据未落库）。</div>
+         <div class="hint">🟢 解决路径：<br>
+         · 统信 UOS（内存仅 8G）：请用菜单「传输与共享 → 从安卓复制照片」做<b>目录流式导入</b>（免整包入内存，避免崩溃）；<br>
+         · 其他平台：菜单「批量导入照片 → 手机文件夹 / zip」导入后再导出；<br>
+         · 安卓导出给他端：菜单「传输与共享 → 从安卓平台导出照片」生成按机构命名的 zip，再由他端复制导入。</div>`,
+        `<button class="btn primary" onclick="APP.close()">知道了</button>`);
+    }
+    // 大文件流量提醒
+    const _phSize = files.reduce((a, f) => a + Math.floor(String(f.b64 || "").length * 0.75), 0);
+    const go = await confirmLargeTransfer(`导出 ${files.length} 张照片`, _phSize);
+    if (!go) { closeModal(); return; }
+    closeModal();
+    busy("正在生成照片压缩包，请稍后…");
+    // 压缩包名称：优先用户自定义文件名 → 组合段（fnameSegs）→ 管理所命名
+    const offices = [...new Set(recs.map((r) => normOffice(r.office)).filter(Boolean))];
+    const segsBase = (opts.fnameSegs && opts.fnameSegs.length && recs.length)
+      ? opts.fnameSegs.map((sg) => sg === "name" ? (recs.length === 1 ? segSafe(recs[0].name) : recs.length + "个监控点") : segSafe(segValOf(recs[0], sg))).filter(Boolean).join("_") : "";
+    const baseName = (opts.fname && opts.fname.trim()) ? opts.fname.trim().replace(/\.[^.]+$/, "")
+      : (segsBase || (offices.length === 1 ? officeSafe(offices[0]) + "照片"
+      : (offices.length > 1 ? officeSafe(offices[0]) + `等${offices.length}所照片` : "监控点照片")));
+    const arr = files.map((f) => ({ name: f.name, data: IO.b64ToBytes(f.b64) }));
+    // bug②修复：附带 manifest.json（filename -> 监控点 id）—— 导出的压缩包可被本 APP 确定性重新导入，无需逐张人工匹配
+    if (manifestItems.length) {
+      const manifest = { format: "shuili-photo-zip", version: 1, count: manifestItems.length, items: manifestItems };
+      arr.push({ name: "manifest.json", data: IO.utf8(JSON.stringify(manifest)) });
+    }
+    if (opts.format === "7z") toast("当前环境 7z 引擎不可用，已改用 zip 导出（命名按机构）");
+    const zipBytes = new Uint8Array(IO.zipStore(arr));
+    // 0 字节防护：压缩包本身为空（极端情况，含 zipStore([]) 恰好 22 字节的边界）绝不假装成功
+    if (!arr.length || zipBytes.length <= 22) {
+      hideBusy();
+      return toast("导出失败：压缩包为空（0 字节），可能照片数据未就绪，请重试或检查照片");
+    }
+    const fname = baseName + ".zip";
+    if (opts.target === "share") {
+      hideBusy();
+      await shareFile(fname, zipBytes, "application/zip");
+    } else if (opts.target === "baidu" || opts.target === "quark") {
+      hideBusy();
+      exportToNetdisk(opts.target, fname, zipBytes);
+    } else if (opts.target === "folder") {
+      if (window.AndroidBridge && window.AndroidBridge.exportFilesToTree) {
+        hideBusy();
+        // v2.2 问题③之三：所选文件夹已有同名照片时，原生 exportFilesToTree 会静默覆盖；先提示确认
+        const dup = (window.AndroidBridge.exportListExists && window.AndroidBridge.exportListExists(JSON.stringify(files))) || false;
+        if (dup) {
+          const ok = await new Promise((res) => {
+            openModal("目标文件夹已有同名照片",
+              `<div class="hint">所选文件夹中已存在同名照片文件，导出将<b>覆盖</b>这些文件。是否继续？</div>
+               <div class="hint">文件名形如 <code>机构/监控点_序号.jpg</code>，按机构分组。</div>`,
+              `<button class="btn ghost" id="foSkip">取消</button><button class="btn danger" id="foOver">覆盖导出</button>`);
+            el("foSkip").onclick = () => { closeModal(); res(false); };
+            el("foOver").onclick = () => { closeModal(); res(true); };
+          });
+          if (!ok) return toast("已取消导出（未覆盖同名文件）");
+        }
+        window.AndroidBridge.exportFilesToTree(JSON.stringify(files));
+        toast(`已向系统请求导出 ${files.length} 张照片到所选文件夹（按机构分组）`);
+      } else {
+        hideBusy();
+        IO.downloadBytes(fname, zipBytes, "application/zip");
+        toast("当前环境不支持选择文件夹，已改为下载 zip（按机构命名）");
+      }
+    } else {
+      // 本地下载 zip：经原生分块写入 + onExportResult 回调决定成败提示（不再提前报成功）
+      IO.downloadBytes(fname, zipBytes, "application/zip");
+      // 注意：busy 遮罩在 onExportResult 回调里关闭，避免 SAF 弹窗期间误关
+    }
+  }
+  // 原生导出完成回调：写盘成功才提示成功，失败明确报错（杜绝"假成功 + 0 字节"）
+  function onExportResult(ok, msg) {
+    hideBusy();
+    if (ok) toast("导出成功：" + (msg || "文件已保存"));
+    else toast(msg || "导出未完成");
+  }
+  // 分享给第三方（微信/飞书/QQ）：用系统分享面板；不支持时降级为下载
+  async function shareFile(filename, bytes, mime) {
+    const file = new File([bytes], filename, { type: mime || "application/octet-stream" });
+    const canShare = navigator.share && (navigator.canShare ? navigator.canShare({ files: [file] }) : true);
+    if (canShare) {
+      try {
+        await navigator.share({ files: [file], title: "视频设备运维照片", text: "视频设备运维一张图 · 照片导出" });
+        toast("已唤起系统分享，请选择微信 / 飞书 / QQ 等");
+        return;
+      } catch (e) { if (e && e.name === "AbortError") return; /* 用户取消，不报错 */ }
+    }
+    IO.downloadBytes(filename, bytes, mime);
+    toast("当前环境不支持系统分享，已改为本地下载");
+  }
+
+  // 分享单条监控点（含照片 + 关键信息）给微信 / QQ / 飞书等：打包 zip 走系统分享面板
+  async function shareBuilding(rid) {
+    const r = findRec(rid); if (!r) return;
+    const phs = (r.photos || []).filter((p) => p.dataUrl && p.dataUrl.startsWith("data:") && p.dataUrl.includes(";base64,"));
+    if (!phs.length) return toast("该监控点没有可分享的照片");
+    busy("正在准备分享文件，请稍后…");
+    try {
+      const safe = (s) => (s || "building").replace(/[\\/:*?"<>|\r\n\t]+/g, "_").slice(0, 40);
+      const files = [];
+      const lines = [
+        "监控点名称：" + (r.name || ""),
+        "机构：" + (r.office || ""),
+        "库渠：" + (r.station || ""),
+        "类型：" + (r.btype || r.type || ""),
+        "坐标：" + (r.lon != null && r.lat != null ? (r.lon + "," + r.lat) : "—"),
+        "",
+        "参数：",
+        ...Object.keys(r.params || {}).map((k) => "  " + k + " : " + (r.params[k] || "")),
+        "",
+        "照片张数：" + phs.length,
+      ];
+      files.push({ name: safe(r.name) + "_信息.txt", data: new TextEncoder().encode(lines.join("\n")) });
+      phs.forEach((p, i) => files.push({ name: `photo_${i + 1}.jpg`, data: IO.b64ToBytes(p.dataUrl.split(",")[1]) }));
+      const zip = IO.zipStore(files);
+      hideBusy();
+      if (!zip || zip.length <= 22) return toast("分享失败：打包内容为空");
+      await shareFile(safe(r.name) + "_分享.zip", zip, "application/zip");
+    } catch (e) { hideBusy(); toast("分享失败：" + (e && e.message ? e.message : e)); }
+  }
+  function exportToNetdisk(prov, filename, bytes) {
+    try {
+      if (window.AndroidBridge && window.AndroidBridge.netdiskExport) {
+        window.AndroidBridge.netdiskExport(prov, filename, Array.from(bytes));
+        toast(`已请求导出到${prov === "baidu" ? "百度" : "夸克"}网盘，请在网盘选择器确认`);
+        return;
+      }
+    } catch (e) { /* 桥接异常→降级 */ }
+    IO.downloadBytes(filename, bytes, "application/zip");
+    toast(`当前网页版未集成网盘授权，已先下载 ${filename}；可再用网盘 App 上传，或在 Android APP 内操作`);
+  }
+
+  // ---------- 网盘导入导出（item 4，凭证门控）----------
+  function netdiskMenu() {
+    const html = `<div class="hint">百度网盘 / 夸克网盘 导入导出需先在本机配置对应网盘凭证（AppKey/Token），当前为<b>未配置</b>状态。</div>
+      <div class="hint">配置后此处可直接浏览网盘目录、拉取 kmz/照片 或上传。详见「帮助 → 网盘与互传」。</div>
+      <div class="field" style="margin-top:10px">
+        <button class="btn primary block" id="ndBaiduIn">📥 百度网盘导入</button>
+        <button class="btn ghost block" id="ndBaiduOut" style="margin-top:8px">📤 百度网盘导出</button>
+        <button class="btn ghost block" id="ndQuarkIn" style="margin-top:8px">📥 夸克网盘导入</button>
+        <button class="btn ghost block" id="ndQuarkOut" style="margin-top:8px">📤 夸克网盘导出</button>
+      </div>`;
+    openModal("网盘导入导出", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+    const call = (prov, dir) => {
+      if (window.AndroidBridge && window.AndroidBridge.netdiskImport) {
+        if (dir === "in") window.AndroidBridge.netdiskImport(prov, pendingBatch.kind || "photos");
+        else window.AndroidBridge.netdiskExport(prov, "ovkmz");
+      } else {
+        toast("当前环境未集成网盘（需 Android APK 且配置凭证）");
+      }
+    };
+    el("ndBaiduIn").onclick = () => call("baidu", "in");
+    el("ndBaiduOut").onclick = () => call("baidu", "out");
+    el("ndQuarkIn").onclick = () => call("quark", "in");
+    el("ndQuarkOut").onclick = () => call("quark", "out");
+  }
+
+  // ---------- 手机互传（item 5，P2P / 局域网，需两台设备真机测试）----------
+  async function lanGetIp() {
+    try { const r = await fetch("https://api.ipify.org?format=json").catch(() => null); return r ? (await r.json()).ip : "未知（不影响局域网互传）"; } catch (e) { return "未知（不影响局域网互传）"; }
+  }
+  async function lanMenu() {
+    const ip = await lanGetIp();
+    const html = `<div class="hint">两台手机都打开本 APP：一台做<b>服务端</b>（选择 kmz/照片并开启局域网共享），另一台做<b>客户端</b>（输入服务端地址下载）。需处于同一 WiFi/热点。</div>
+      <div class="field"><label>本机外网地址（参考）</label><div class="coord-display"><span class="cd-v" id="lanIp">${ip}</span></div></div>
+      <div class="field">
+        <button class="btn primary block" id="lanStart">🛰 开启服务端（选择文件共享）</button>
+        <button class="btn ghost block" id="lanStop" style="margin-top:8px">⏹ 停止服务端</button>
+        <button class="btn ghost block" id="lanClient" style="margin-top:8px">📡 客户端：从服务端下载</button>
+      </div>`;
+    openModal("手机互传", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+    el("lanStart").onclick = () => { if (window.AndroidBridge && window.AndroidBridge.pickLanShare) window.AndroidBridge.pickLanShare(); else toast("当前环境不支持（需 Android APK）"); closeModal(); };
+    el("lanStop").onclick = () => { if (window.AndroidBridge && window.AndroidBridge.stopLanServer) window.AndroidBridge.stopLanServer(); else toast("当前环境不支持"); closeModal(); };
+    el("lanClient").onclick = () => { closeModal(); lanClientMenu(); };
+  }
+  function lanClientMenu() {
+    const html = `<div class="field"><label>服务端地址（如 192.168.x.x）</label><input id="lanAddr" class="inp" placeholder="192.168.1.10"></div>
+      <div class="field"><label>端口</label><input id="lanPort" class="inp" value="7205"></div>
+      <div class="field"><label>下载内容</label><select id="lanKind"><option value="kmz">kmz/ovkmz（监控点+照片）</option><option value="photos">照片压缩包(zip)</option></select></div>`;
+    openModal("客户端下载", html, `<button class="btn ghost" id="lcCancel">取消</button><button class="btn primary" id="lcGo">下载并导入</button>`);
+    el("lcCancel").onclick = closeModal;
+    el("lcGo").onclick = async () => {
+      const addr = el("lanAddr").value.trim(); const port = el("lanPort").value.trim() || "7205"; const kind = el("lanKind").value;
+      if (!addr) return toast("请输入服务端地址");
+      closeModal(); toast("正在从 " + addr + " 下载…");
+      try {
+        const res = await fetch(`http://${addr}:${port}/`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const buf = await res.arrayBuffer();
+        if (kind === "kmz") {
+          const recs = await IO.importKmzBuffer(buf);
+          await Store.patch((d) => { for (const r of recs) { const exist = BASE.find((b) => b.id === r.id) || (d.added || []).find((a) => a.id === r.id); if (exist) d.updated[r.id] = r; else d.added.push(r); } });
+          DELTA = await Store.get(); merge(); render(); toast(`互传导入成功：${recs.length} 个监控点`);
+        } else {
+          const files = await IO.unzip(new Uint8Array(buf));
+          let cnt = 0; for (const n of Object.keys(files)) { if (/\.(jpe?g|png|gif|bmp|webp)$/i.test(n)) { receivePhoto(n, IO.bytesToB64(files[n])); cnt++; } }
+          if (cnt) receiveDone("photos"); else toast("未找到照片");
+        }
+      } catch (e) { toast("下载失败：" + e.message + "（请确认服务端已开启且同一网络）"); }
+    };
+  }
+
+  // ---------- 导入 / 导出 ----------
+    // ---------- v2.4.9 导入时管理所智能识别 + 统一确认 ----------
+  async function unifyOfficesOnImport(recs) {
+    try {
+      const map = new Map();
+      for (const r of recs) {
+        const raw = String(r.office == null ? "" : r.office).trim();
+        if (!raw) continue;
+        const sm = smartOffice(raw);
+        if (sm.changed) map.set(raw, sm);
+      }
+      if (!map.size) return recs;
+      const rows = Array.from(map.entries()).map(function (kv) {
+        const to = kv[1].office || ("归入站：" + kv[1].station);
+        return '<div class="fi">' + esc(kv[0]) + ' → <b>' + esc(to) + '</b></div>';
+      }).join("");
+      const ok = await new Promise((resolve) => {
+        openModal("管理所名称统一确认",
+          '<div class="hint">导入数据中的管理所名称与标准名单不一致，是否按建议统一？</div>' +
+          '<div class="hint">标准名单：地下水源所、温汤所、云龙山所、翠屏山所、埝湾所、水库所、北台峪所、柳林庄所、清源河所（站为所的下一级，不参与所名单）。</div>' +
+          '<div class="filelist">' + rows + '</div>',
+          '<button class="btn ghost" id="uoKeep">保持原样</button><button class="btn primary" id="uoGo">按建议统一</button>');
+        el("uoKeep").onclick = () => { closeModal(); resolve(false); };
+        el("uoGo").onclick = () => { closeModal(); resolve(true); };
+      });
+      if (!ok) return recs;
+      return recs.map(function (r) {
+        const raw = String(r.office == null ? "" : r.office).trim();
+        if (!raw || !map.has(raw)) return r;
+        const sm = map.get(raw);
+        const nr = Object.assign({}, r, { office: sm.office || raw });
+        if (sm.station && !nr.station) nr.station = sm.station;   // 站下沉为所的下一级
+        return nr;
+      });
+    } catch (e) { return recs; }
+  }
+  // ---------- /v2.4.9 导入统一确认 ----------
+
+  /* ===================== v2.5.0 导入水工建筑物（需求三） =====================
+   * 硬约束（用户在需求原文里反复强调）：
+   *   「导入这些数据只影响建筑物数据，不能影响或覆盖感知设备数据信息」
+   * 因此这里：① 只 patch Store.bld（独立 IndexedDB 键 delta_bld）；② id 统一加 bld: 前缀，
+   * 与设备 id 空间物理隔离；③ 全程不读不写 DELTA（设备增量）。设备线代码一行未动。
+   * 冲突处理按 Q5 答复：同 id 覆盖，并先弹窗把「新增 N 条 / 覆盖 M 条」讲清楚。
+   * ------------------------------------------------------------------------ */
+  const bldNameKey = (r) => String(r.name || "").trim() + "|" + (+r.lon).toFixed(6) + "," + (+r.lat).toFixed(6);
+  function sameBldByName(r) {
+    const k = bldNameKey(r);
+    const all = BASE_BLD.concat(DELTA_BLD.added || []);
+    for (let i = 0; i < all.length; i++) if (bldNameKey(all[i]) === k) return all[i];
+    return null;
+  }
+  function mergeBldKeep(oldRec, newRec, keep) {
+    if (!keep) return newRec;
+    const old = oldRec || {};
+    const out = Object.assign({}, newRec);
+    if (!(out.photos && out.photos.length) && old.photos && old.photos.length) out.photos = old.photos;
+    if (!(out.params && Object.keys(out.params).length) && old.params && Object.keys(old.params).length) out.params = old.params;
+    if (!out.description && old.description) out.description = old.description;
+    if (!out.ts && old.ts) out.ts = old.ts;
+    return out;
+  }
+  async function commitBuildings(recs, sourceName) {
+    const add = [], upd = [];
+    for (const raw of recs) {
+      const r = Object.assign({}, raw);
+      r.id = bldIdOf(r.id);
+      r.layer = LAYER_BLD;
+      r.kind = (r.kind === "place" || r.btype === "地点") ? "place" : "building";
+      if (!r.src) r.src = "import";
+      const exist = BASE_BLD.find((b) => b.id === r.id)
+        || (DELTA_BLD.added || []).find((a) => a.id === r.id)
+        || sameBldByName(r);
+      if (exist) { r.id = exist.id; upd.push(r); } else add.push(r);
+    }
+    const names = upd.slice(0, 12).map((r) => r.name || rawIdOf(r.id)).join("、");
+    const answer = await new Promise((resolve) => {
+      openModal("导入水工建筑物 · 导入确认",
+        `<div class="hint">本次解析到 <b>${recs.length}</b> 条水工建筑物，将写入<b>水工建筑物数据层</b>（独立数据文件 + 独立本地存储键）。</div>
+         <div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;line-height:1.9">
+           ✅ 新增 <b style="color:var(--accent)">${add.length}</b> 条　·　♻️ 覆盖已有 <b style="color:#ffb454">${upd.length}</b> 条${upd.length ? "（" + esc(names) + (upd.length > 12 ? " 等" : "") + "）" : ""}
+         </div>
+         <div class="hint" style="color:#8fd6a8">🔒 感知设备数据完全不受影响：两层使用彼此独立的本地存储键，导入只写建筑物层。</div>
+         <div class="field" style="margin-top:6px"><label><input type="checkbox" id="bldKeepN" checked> 覆盖时保留原有的照片、备注与自定义参数</label></div>`,
+        `<button class="btn ghost" id="bldImpCancel">取消</button><button class="btn primary" id="bldImpGo">确认导入</button>`);
+      el("bldImpCancel").onclick = () => { closeModal(); resolve(null); };
+      el("bldImpGo").onclick = () => { const keep = !!(el("bldKeepN") && el("bldKeepN").checked); closeModal(); resolve({ keep: keep }); };
+    });
+    if (!answer) return toast("已取消导入（建筑物层未做任何改动）");
+    const keep = answer.keep;
+    await Store.bld.patch((d) => {
+      d.added = d.added || []; d.updated = d.updated || {}; d.deleted = d.deleted || [];
+      for (const r of add.concat(upd)) {
+        const i = d.added.findIndex((a) => a.id === r.id);
+        if (i >= 0) { d.added[i] = mergeBldKeep(d.added[i], r, keep); continue; }
+        const base = BASE_BLD.find((b) => b.id === r.id);
+        if (base) d.updated[r.id] = mergeBldKeep(Object.assign({}, base, d.updated[r.id] || {}), r, keep);
+        else d.added.push(r);
+      }
+      // 覆盖导入不应把「已删除」的记录又拉回来
+      if (upd.length) d.deleted = d.deleted.filter((x) => !upd.some((r) => r.id === x));
+    });
+    DELTA_BLD = await Store.bld.get();
+    merge(); render();
+    toast(`导入完成：新增 ${add.length} 条、覆盖 ${upd.length} 条水工建筑物（感知设备数据未受影响）`);
+    kbLog("导入水工建筑物", { file: sourceName, add: add.length, upd: upd.length });
+  }
+
+  async function doImport(file, layer) {
+    const target = layer || LAYER_DEV;
+    const isBldImport = target === LAYER_BLD;
+    const ext = file.name.toLowerCase().split(".").pop();
+    if (!["kml", "csv", "kmz", "ovkmz", "xls", "xlsx", "ovobj", "obj"].includes(ext)) return toast("不支持的格式：" + ext);
+    // 大文件流量提醒（items 1/2：kmz/ovkmz 可能含大量照片 >3GB）
+    if (ext === "kmz" || ext === "ovkmz") {
+      const go = await confirmLargeTransfer("导入 kmz/ovkmz", file.size);
+      if (!go) return;
+    }
+    try {
+      busy("正在解析导入文件，请稍后…");
+      let recs, bufBytes = null;
+      // v2.4.9-C：CSV/KML 先读字节再自动识别编码（奥维导出多为 GBK，直接 file.text() 会乱码）
+      if (ext === "kml") { const ab = await file.arrayBuffer(); bufBytes = new Uint8Array(ab); recs = IO.parseKmlToRecords(IO.decodeText(bufBytes)); }
+      else if (ext === "csv") { const ab = await file.arrayBuffer(); bufBytes = new Uint8Array(ab); recs = IO.parseCsvToRecords(IO.decodeText(bufBytes)); }
+      else if (ext === "xlsx") { const ab = await file.arrayBuffer(); bufBytes = new Uint8Array(ab); recs = await IO.parseXlsxToRecords(bufBytes); }
+      else if (ext === "xls") { const txt = await file.text(); bufBytes = IO.utf8(txt); recs = IO.parseXlsToRecords(txt); }
+      else if (ext === "ovobj" || ext === "obj") {
+        // ① 奥维原生二进制（OviO 魔数）→ 点对象逆向解析；② PK=zip 容器 → kmz 解包兜底；③ 1f=gzip 旧版→提示；④ 否则文本坐标
+        const ab = await file.arrayBuffer();
+        const head = new Uint8Array(ab).subarray(0, 4);
+        if (head[0] === 0x4f && head[1] === 0x76 && head[2] === 0x69 && head[3] === 0x4f) {
+          bufBytes = new Uint8Array(ab);
+          recs = IO.parseOvobjBinary(bufBytes);
+        } else if (head[0] === 0x50 && head[1] === 0x4b) { // ZIP 容器（奥维 .ovobj 常为此类）
+          bufBytes = new Uint8Array(ab);
+          recs = await IO.importKmzBuffer(bufBytes.buffer);
+        } else if (head[0] === 0x1f) { // gzip 容器（旧版奥维）：浏览器无原生解压，提示电脑端
+          throw new Error("该 .ovobj 为 gzip 压缩格式，请改用电脑端/PWA 导入，或先在奥维导出为 ovkmz");
+        } else {
+          const txt = await file.text();
+          bufBytes = IO.utf8(txt);
+          recs = IO.parseOvobjToRecords(txt);
+        }
+      }
+      else {
+        const ab = await file.arrayBuffer();
+        bufBytes = new Uint8Array(ab);
+        recs = await IO.importKmzBuffer(bufBytes.buffer);
+      }
+      if (!recs.length) { hideBusy(); throw new Error(isBldImport ? "未解析到任何水工建筑物" : "未解析到任何监控点"); }
+
+      recs = await unifyOfficesOnImport(recs);
+      // 水工建筑物：走独立提交通道（只写建筑物层、同 id 覆盖并提示）；设备层流程保持原样
+      if (isBldImport) {
+        hideBusy();
+        await commitBuildings(recs, file.name);
+        return;
+      }
+      // 内容去重（item 6）：整文件哈希，若与此前导入的相同则提示覆盖/跳过
+      if (bufBytes) {
+        const h = await IO.sha256Hex(bufBytes);
+        const ui = Store.ui.get() || {};
+        const srcs = ui.importedSources || [];
+        if (srcs.some((s) => s.h === h)) {
+          hideBusy(); // 去重弹窗需交互，先收起遮罩
+          const ok = await new Promise((resolve) => {
+            openModal("文件内容重复", `<div class="hint">该文件（${esc(file.name)}）内容与之前导入的完全相同（按内容校验，非文件名）。是否仍要覆盖导入？</div>`,
+              `<button class="btn ghost" id="imSkip">跳过</button><button class="btn primary" id="imOver">覆盖导入</button>`);
+            el("imSkip").onclick = () => { closeModal(); resolve(false); };
+            el("imOver").onclick = () => { closeModal(); resolve(true); };
+          });
+          if (!ok) return toast("已跳过重复导入"); // busy 已收起
+        }
+        const newsrcs = srcs.filter((s) => s.h !== h).concat([{ h, name: file.name, at: Date.now() }]).slice(-50);
+        Store.ui.set(Object.assign({}, ui, { importedSources: newsrcs }));
+      }
+      await Store.patch((d) => {
+        for (const r of recs) {
+          const exist = BASE.find((b) => b.id === r.id) || (d.added || []).find((a) => a.id === r.id);
+          if (exist) { d.updated[r.id] = r; }
+          else { d.added.push(r); }
+        }
+      });
+      DELTA = await Store.get(); merge(); render();
+      hideBusy();
+      toast(`导入成功：${recs.length} 个监控点`);
+      kbLog("导入监控点", { file: file.name, count: recs.length });
+    } catch (e) { hideBusy(); toast("导入失败：" + e.message); }
+  }
+  function exportMenu() {
+    const hasFilter = filterActive();
+    const shown = shownRecords();
+    const scope = hasFilter ? shown.filter(passFilter) : shown;
+    const scopeLabel = hasFilter ? `筛选结果（${scope.length} 个）` : `当前对象类别全部（${scope.length} 个）`;
+    const layerHint = `当前对象类别：<b>${filter.layers.map((k) => (LAYERS.find((L) => L.key === k) || {}).label || k).join(" + ") || "（未选）"}</b>（含感知设备 ${filter.layers.includes(LAYER_DEV) ? records.length : 0} 个、水工建筑物 ${filter.layers.includes(LAYER_BLD) ? recordsBld.length : 0} 个）`
+      + (filter.layers.length > 1 ? `<br><span style="color:#ffb454">提示：当前同时勾选了感知设备与水工建筑物，两者「机构 / 管理所」口径不同（设备=管理处，建筑物=管理所），建议分层导出，避免同一列混两种含义。</span>` : "");
+    const html = `<div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;color:var(--txt);line-height:1.7">当前导出范围：<b style="color:var(--accent);font-size:14px">${scopeLabel}</b>${hasFilter ? "（已按当前筛选条件预选，可在下方增删）" : "（未筛选则导出当前对象类别全部；可先「筛选」再导出以只导筛选集）"}<br><span style="font-size:12px">${layerHint}</span></div>
+      <div class="field" style="margin-top:12px"><label>导出范围（勾选指定监控点）</label>
+        <div class="ex-selbar"><button class="btn ghost sm" id="exAll">全选</button><button class="btn ghost sm" id="exNone">全不选</button><span class="hint" id="exCnt">已选 ${scope.length}/${scope.length}</span></div>
+        <div class="ex-list" id="exList">${scope.map((r) => `<label class="ex-item"><input type="checkbox" class="ex-cb" value="${r.id}" checked><span>${esc(r.name)}</span></label>`).join("")}</div>
+      </div>
+      ${DIMS.offices.length ? `<div class="field"><label>按机构（默认全选 · 含全部机构）</label><div class="ofc-list" id="exOffices" style="max-height:150px;overflow:auto;display:flex;flex-wrap:wrap;gap:6px 14px">${DIMS.offices.map((o) => `<label class="ofc"><input type="checkbox" class="ofc-cb" value="${esc(o)}" checked>${esc(o)}</label>`).join("")}</div></div>` : ""}
+      <div class="field"><label>格式</label>
+        <select id="exFmt">
+          <option value="ovkmz">ovkmz（奥维可导入，含照片）</option>
+          <option value="kmz">kmz（含照片）</option>
+          <option value="kml">kml（不含照片，通用）</option>
+          <option value="csv">csv（属性表）</option>
+          <option value="chaohe">清源河格式（CSV 兼容）</option>
+          <option value="xlsx">xlsx（Excel，通用）</option>
+          <option value="xls">xls（Excel 2003 兼容）</option>
+          <option value="ovobj">ovobj（奥维文本坐标，纯文本）</option>
+          <option value="ovobjbin">ovobj（奥维二进制 OviO，兼容奥维）</option>
+        </select></div>
+      <div class="field" id="exColsField" style="display:none"><label>导出列（可取消勾选不需要的列）</label>
+        <div class="ex-selbar"><button class="btn ghost sm" id="colAll">全选</button><button class="btn ghost sm" id="colNone">全不选</button></div>
+        <div class="ex-list" id="exCols"></div></div>
+      <div class="field"><label>导出位置</label>
+        <select id="exWhere"><option value="saf">系统选择器（可自定义文件夹/文件名）</option><option value="folder">指定手机文件夹（Android）</option></select></div>
+      <div class="field"><label>文件名组合段（点选即重生成文件名，可再手改；默认 所+名称）</label>
+        <div class="chips" id="exSegs">
+          <span class="chip" data-seg="bureau">局</span><span class="chip" data-seg="mgmt">管理处</span>
+          <span class="chip on" data-seg="office">所</span><span class="chip" data-seg="station">站</span>
+          <span class="chip" data-seg="section">段</span><span class="chip" data-seg="name">名称</span>
+        </div></div>
+      <div class="field"><label>文件名（不含扩展名，留空用默认/组合段）</label><input id="exFname" class="inp" placeholder="监控点信息" value=""></div>
+      <div class="hint">ovkmz/kmz 为 zip 包（doc.kml + 照片）；清源河格式为 CSV（列：名称,机构,库渠,类型,经度,纬度,说明）；xlsx/xls 为统一属性表（名称/机构/库渠/信息系统分类/经纬度/自定义参数/说明），<b>导出的文件可原样再导入</b>。选「指定手机文件夹」将弹出系统文件夹选择器。机构选项会按所选监控点自动匹配。</div>`;
+    openModal("导出", html, `<button class="btn ghost" id="exCancel">取消</button><button class="btn primary" id="exGo">导出</button>`);
+    // v2.4：组合段 → 文件名生成（点选即生成，可再手改）
+    const exSegValOf = (r, seg) => seg === "bureau" ? orgVal(r, "bureau") : seg === "mgmt" ? orgVal(r, "mgmt")
+      : seg === "office" ? normOffice(orgVal(r, "office")) : seg === "station" ? (r.station || "")
+      : seg === "section" ? (r.section || "") : (r.name || "");
+    const exSafeSeg = (v) => (v || "").replace(/[\\/:*?"<>|\n\r]+/g, "_").trim();
+    el("exSegs").querySelectorAll(".chip").forEach((c) => c.onclick = () => {
+      c.classList.toggle("on");
+      const segs = [...el("exSegs").querySelectorAll(".chip.on")].map((x) => x.dataset.seg);
+      if (!segs.length) return;
+      const recs = scope;
+      const parts = segs.map((sg) => sg === "name" ? (recs.length === 1 ? exSafeSeg(recs[0].name) : recs.length + "个监控点") : exSafeSeg(exSegValOf(recs[0], sg))).filter(Boolean);
+      if (parts.length) el("exFname").value = parts.join("_");
+    });
+    const list = el("exList");
+    const updateCnt = () => { el("exCnt").textContent = `已选 ${list.querySelectorAll(".ex-cb:checked").length}/${scope.length}`; };
+    el("exAll").onclick = () => { list.querySelectorAll(".ex-cb").forEach((c) => c.checked = true); updateCnt(); };
+    el("exNone").onclick = () => { list.querySelectorAll(".ex-cb").forEach((c) => c.checked = false); updateCnt(); };
+    el("exCancel").onclick = closeModal;
+    // 导出可选列（#39）：csv/chaohe 时显示列多选，默认全选
+    const EX_COLS = {
+      // v2.4.9-C：列键与 io.buildCsv(keys: name/mgmt/office/station/btype/lat/lon/params) 严格对齐
+      csv: [["name", "名称", true], ["mgmt", "管理处", false], ["office", "机构", true], ["station", "库渠", true], ["btype", "摄像机类型", true], ["lat", "纬度", true], ["lon", "经度", true], ["params", "Comment", true], ["folder", "文件夹", false]],
+      chaohe: [["name", "名称"], ["mgmt", "管理处"], ["office", "机构"], ["station", "库渠"], ["btype", "摄像机类型"], ["lon", "经度"], ["lat", "纬度"], ["comment", "说明"]],
+      xlsx: [["name", "名称"], ["office", "机构"], ["station", "库渠"], ["btype", "摄像机类型"], ["lon", "经度"], ["lat", "纬度"], ["desc", "说明"]],
+      xls: [["name", "名称"], ["office", "机构"], ["station", "库渠"], ["btype", "摄像机类型"], ["lon", "经度"], ["lat", "纬度"], ["desc", "说明"]],
+      ovobj: [["name", "名称"], ["office", "机构"], ["station", "库渠"], ["btype", "摄像机类型"], ["lon", "经度"], ["lat", "纬度"], ["desc", "说明"]],
+    };
+    const exColsField = el("exColsField"), exColsBox = el("exCols");
+    function renderExCols() {
+      const f = el("exFmt").value;
+      if (f !== "csv" && f !== "chaohe" && f !== "xlsx" && f !== "xls" && f !== "ovobj") { exColsField.style.display = "none"; return; }
+      const def = EX_COLS[f] || [];
+      exColsBox.innerHTML = def.map((p) => '<label class="ex-item"><input type="checkbox" class="col-cb" value="' + p[0] + '" checked><span>' + p[1] + '</span></label>').join("");
+      exColsField.style.display = "";
+    }
+    el("exFmt").addEventListener("change", renderExCols);
+    el("colAll").onclick = () => { exColsBox.querySelectorAll(".col-cb").forEach((c) => c.checked = true); };
+    el("colNone").onclick = () => { exColsBox.querySelectorAll(".col-cb").forEach((c) => c.checked = false); };
+    renderExCols();
+
+    el("exGo").onclick = async () => {
+      const fmt = el("exFmt").value, where = el("exWhere").value;
+      const ids = [...list.querySelectorAll(".ex-cb:checked")].map((c) => c.value);
+      let sel = shownRecords().filter((r) => ids.includes(r.id));
+      // v2.4：机构选项按所选监控点自动匹配——若 ofc-cb 处于全选（用户未主动收缩），用 sel 的机构子集覆盖
+      const ofcBox = el("exOffices");
+      let offices = null;
+      if (ofcBox) {
+        const all = [...ofcBox.querySelectorAll(".ofc-cb")];
+        const checked = all.filter((c) => c.checked).map((c) => c.value);
+        if (checked.length === all.length && all.length > 0) {
+          offices = [...new Set(sel.map((r) => normOffice(r.office)).filter(Boolean))];
+          all.forEach((c) => c.checked = offices.includes(c.value));
+        } else { offices = checked; }
+      }
+      if (offices && offices.length) sel = sel.filter((r) => offices.includes(normOffice(r.office)));
+      if (!sel.length) return toast("请至少选择一项");
+      const hasCols = (fmt === "csv" || fmt === "chaohe" || fmt === "xlsx" || fmt === "xls");
+      const cols = hasCols ? [...exColsBox.querySelectorAll(".col-cb:checked")].map((c) => c.value) : null;
+      if (hasCols && (!cols || !cols.length)) return toast("请至少选择一列");
+      const fnameRaw = (el("exFname") ? (el("exFname").value || "").trim() : "");
+      const extMap = { ovkmz: "ovkmz", kmz: "kmz", kml: "kml", csv: "csv", chaohe: "csv", xlsx: "xlsx", xls: "xls", ovobj: "ovobj", ovobjbin: "ovobj" };
+      const ext = extMap[fmt] || "txt";
+      const base = fnameRaw ? fnameRaw.replace(/\.[^.]+$/, "") : "监控点信息";
+      const fname = base + "." + ext;
+      if (fmt === "ovkmz" || fmt === "kmz") {
+        const _sz = (typeof sel !== "undefined" && sel ? sel : []).reduce((a, r) => a + (r.photos || []).reduce((b, ph) => b + Math.floor(String(ph.dataUrl || ph.full || "").length * 0.75), 0), 0);
+        const go = await confirmLargeTransfer("导出 " + fmt.toUpperCase(), _sz);
+        if (!go) return;
+      }
+      // v2.4.9 导出统一：管理所一律写标准名（去「管理」、清源河/水库归位），与导入/筛选口径一致
+      (typeof sel !== "undefined" && sel ? sel : []).forEach(function (r) { if (r && r.office != null) { const nv = normOffice(r.office); if (nv) r.office = nv; } });
+      busy("正在生成导出文件，请稍后…");
+      await new Promise((r) => setTimeout(r, 30));
+      try {
+        if (where === "folder" && window.AndroidBridge && window.AndroidBridge.exportFilesToTree) {
+          let content = "";
+          if (fmt === "csv") content = IO.buildCsv(sel, cols);
+          else if (fmt === "chaohe") content = IO.buildChaohe(sel, cols);
+          else if (fmt === "kml") content = IO.buildKML(sel);
+          else if (fmt === "xlsx") content = IO.buildAttrXlsx(sel, cols);
+          else if (fmt === "xls") content = IO.buildAttrXls(sel, cols);
+          else if (fmt === "ovobj") content = IO.recordsToOvobj(sel, cols);
+          else if (fmt === "ovobjbin") content = IO.recordsToOvobjBinary(sel);
+          else content = IO.buildCsv(sel, cols);
+          const b64 = (fmt === "xlsx" || fmt === "xls" || fmt === "ovobjbin") ? IO.bytesToB64(content) : IO.bytesToB64(IO.utf8(content));
+          window.AndroidBridge.exportFilesToTree(JSON.stringify([{ name: fname, b64 }]));
+          hideBusy(); closeModal(); toast("已向系统请求导出到所选文件夹：" + fname);
+          return;
+        }
+        if (fmt === "ovkmz") IO.exportOvkmz(sel, fname);
+        else if (fmt === "kmz") IO.exportKmz(sel, fname);
+        else if (fmt === "kml") IO.exportKml(sel, fname);
+        else if (fmt === "csv") IO.exportCsv(sel, null, cols, fname);
+        else if (fmt === "chaohe") IO.exportChaoheFile(sel, null, cols, fname);
+        else if (fmt === "xlsx") IO.exportXlsx(sel, null, cols, fname);
+        else if (fmt === "xls") IO.exportXls(sel, null, cols, fname);
+        else if (fmt === "ovobj") IO.exportOvobj(sel, null, cols, fname);
+        else if (fmt === "ovobjbin") IO.exportOvobjBin(sel, fname);
+        hideBusy();
+        closeModal(); toast("已开始导出 " + fmt.toUpperCase() + "：" + fname);
+      } catch (e) { hideBusy(); closeModal(); toast("导出失败：" + (e && e.message ? e.message : e)); }
+    };
+  }
+
+  // ---------- 其它：统计/定位/同步/重置/帮助/关于 ----------
+  function stats() {
+    const byOffice = {}, byBtype = {};
+    records.forEach((r) => { byOffice[r.office] = (byOffice[r.office] || 0) + 1; byBtype[r.btype] = (byBtype[r.btype] || 0) + 1; });
+    const byOfficeB = {}, byBtypeB = {};
+    recordsBld.forEach((r) => { const o = normOffice(orgVal(r, "office")) || "(未填)"; byOfficeB[o] = (byOfficeB[o] || 0) + 1; byBtypeB[r.btype] = (byBtypeB[r.btype] || 0) + 1; });
+    const grid = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="stat"><div class="n">${v}</div><div class="t">${esc(k) || "未分类"}</div></div>`).join("");
+    const custom = (DELTA.added || []).length + Object.keys(DELTA.updated || {}).length;
+    const customB = (DELTA_BLD.added || []).length + Object.keys(DELTA_BLD.updated || {}).length;
+    const html = `<div class="stat-grid">
+        <div class="stat"><div class="n">${records.length}</div><div class="t">📡 感知设备总数</div></div>
+        <div class="stat"><div class="n">${recordsBld.length}</div><div class="t">🏗️ 水工建筑物总数</div></div>
+        <div class="stat"><div class="n">${custom}</div><div class="t">设备·我的改动</div></div>
+        <div class="stat"><div class="n">${customB}</div><div class="t">建筑物·我的改动</div></div>
+      </div>
+      <div class="hint" style="margin-top:8px">两层数据彼此独立：设备层来自 data.js，建筑物层来自独立文件 data_buildings.js；本地改动分别存于独立存储键（delta / delta_bld），互不影响。</div>
+      <h4 style="margin:14px 0 6px">感知设备 · 按机构</h4><div class="stat-grid">${grid(byOffice)}</div>
+      <h4 style="margin:14px 0 6px">感知设备 · 按摄像机类型</h4><div class="stat-grid">${grid(byBtype)}</div>
+      <h4 style="margin:14px 0 6px">水工建筑物 · 按管理所</h4><div class="stat-grid">${grid(byOfficeB)}</div>
+      <h4 style="margin:14px 0 6px">水工建筑物 · 按建筑物类型</h4><div class="stat-grid">${grid(byBtypeB)}</div>`;
+    openModal("统计概览", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+  }
+  function locate() {
+    if (!navigator.geolocation) return toast("当前环境不支持定位");
+    toast("正在定位…");
+    navigator.geolocation.getCurrentPosition((p) => {
+      myLoc = { lat: p.coords.latitude, lon: p.coords.longitude };
+      if (myLocMarker) map.removeLayer(myLocMarker);
+      myLocMarker = L.circleMarker([myLoc.lat, myLoc.lon], { radius: 9, color: "#2ecc8f", fillColor: "#2ecc8f", fillOpacity: .65, weight: 3 }).addTo(map).bindPopup("我的位置").openPopup();
+      map.setView([myLoc.lat, myLoc.lon], 15);
+      toast("已定位到我的位置");
+    }, (err) => {
+      const denied = (err && err.code === 1); // PERMISSION_DENIED
+      if (window.AndroidBridge && window.AndroidBridge.openLocationSettings) {
+        // APK(WebView)：直接跳转系统定位设置页
+        window.AndroidBridge.openLocationSettings();
+      } else if (denied) {
+        toast("定位被拒绝，请在浏览器站点设置中允许定位");
+      } else {
+        toast("无法获取位置：请确认已开启定位服务后重试");
+      }
+    }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+  }
+  // ---------- 导航 / 周边 / 测距 ----------
+  function navigate(id) {
+    const r = findRec(id); if (!r) return;
+    const name = r.name || "目标";
+    let url;
+    if (myLoc) {
+      url = `https://uri.amap.com/navigation?from=${myLoc.lon},${myLoc.lat},我的位置&to=${r.lon},${r.lat},${encodeURIComponent(name)}&mode=car&policy=1&src=shuili&coordinate=wgs84&callnative=1`;
+    } else {
+      url = `https://uri.amap.com/marker?position=${r.lon},${r.lat}&name=${encodeURIComponent(name)}&src=shuili&coordinate=wgs84&callnative=1`;
+    }
+    if (window.AndroidBridge && window.AndroidBridge.openNav) window.AndroidBridge.openNav(url);
+    else window.open(url, "_blank");
+    toast("已导航至" + layerLabel(r) + "：「" + name + "」" + (myLoc ? "（起点：我的位置）" : ""));
+  }
+  function nearCenter(id) {
+    const r = findRec(id); if (!r) return;
+    nearbyCenter = { lat: r.lat, lon: r.lon };
+    openNearby();
+  }
+  // 对象类别选择器（可复用的 chips 片段）
+  function layerChips(id, sel) {
+    return `<div class="chips" id="${id}">` + LAYERS.map((L) => `<span class="chip ${sel.includes(L.key) ? "on" : ""}" data-lk="${L.key}">${L.icon} ${L.label}${L.key === LAYER_DEV ? "（默认）" : ""}</span>`).join("") + `</div>`;
+  }
+  function readLayerChips(id, fallback) {
+    const box = el(id); if (!box) return fallback;
+    const v = [...box.querySelectorAll(".chip.on")].map((c) => c.dataset.lk);
+    return v.length ? v : fallback;
+  }
+  function openNearby() {
+    const centerOpts = `<option value="map">当前地图中心</option>` +
+      (myLoc ? `<option value="me">我的位置</option>` : ``) +
+      `<option value="pick">在地图上点选</option>` +
+      records.slice(0, 200).map((r) => `<option value="${esc(r.id)}">📡 ${esc(r.name)}</option>`).join("") +
+      recordsBld.slice(0, 200).map((r) => `<option value="${esc(r.id)}">🏗️ ${esc(r.name)}</option>`).join("");
+    const html = `<div class="field"><label>中心</label><select id="nbCenter">${centerOpts}</select></div>
+      <div class="field"><label>对象类别（勾选后生效，感知设备为默认）</label>${layerChips("nbLayers", filter.layers)}</div>
+      <div class="field"><label>半径（km，可直接输入）</label>
+        <input id="nbRadiusKm" class="inp" inputmode="decimal" value="${spatialRadiusKm}" style="max-width:140px">
+        <div class="chips" id="nbQuick">${[0.2, 0.5, 1, 3, 5].map((v) => `<span class="chip ${Math.abs(v - spatialRadiusKm) < 1e-6 ? "on" : ""}" data-km="${v}">${v} km</span>`).join("")}</div></div>
+      <div class="field"><label>周边感知设备类型（可多选，不选=全部）</label><div class="chips" id="nbBtypes">${DIMS.btypes.map((t) => `<span class="chip" data-bt="${esc(t)}">${esc(t)}</span>`).join("")}</div></div>
+      <div class="field"><label>周边水工建筑物类型（可多选，不选=全部）</label><div class="chips" id="nbBtypesBld">${DIMS.btypesBld.map((t) => `<span class="chip" data-btb="${esc(t)}">${esc(t)}</span>`).join("")}</div></div>
+      <div class="hint">将显示与「中心」距离不超过半径、且符合所选类型与对象类别的全部对象，并在地图上画范围圈。</div>`;
+    openModal("周边搜索", html, `<button class="btn ghost" id="nbExit">退出</button><button class="btn ghost" id="nbClear">清除周边</button><button class="btn primary" id="nbGo">搜索</button>`);
+    el("nbExit").onclick = closeModal;
+    document.querySelectorAll("#nbBtypes .chip, #nbBtypesBld .chip, #nbLayers .chip, #nbQuick .chip").forEach((c) => c.onclick = () => c.classList.toggle("on"));
+    el("nbQuick").querySelectorAll(".chip").forEach((c) => c.onclick = () => { el("nbRadiusKm").value = c.dataset.km; });
+    el("nbGo").onclick = () => {
+      const cval = el("nbCenter").value;
+      const km = parseFloat(el("nbRadiusKm").value);
+      if (!isFinite(km) || km <= 0) return toast("请填写有效的半径（km）");
+      spatialRadiusKm = km;
+      const rad = Math.round(km * 1000);
+      if (cval === "map") nearbyCenter = { lat: map.getCenter().lat, lon: map.getCenter().lng };
+      else if (cval === "me") { if (!myLoc) return toast("尚未定位，请先「定位我的位置」"); nearbyCenter = myLoc; }
+      else if (cval === "pick") { closeModal(); pickNearbyCenter(rad); return; }
+      else { const rr = findRec(cval); if (!rr) return; nearbyCenter = { lat: rr.lat, lon: rr.lon }; }
+      nearbyRadius = rad;
+      filter.layers = readLayerChips("nbLayers", filter.layers);
+      nearbyBtypes = [...document.querySelectorAll("#nbBtypes .chip.on")].map((c) => c.dataset.bt);
+      nearbyBtypesBld = [...document.querySelectorAll("#nbBtypesBld .chip.on")].map((c) => c.dataset.btb);
+      closeModal(); render(); fitToShown(); saveUI();
+      const btSuffix = nearbyBtypes.length ? `（设备类型：${nearbyBtypes.join("/")}）` : "";
+      toast(`周边 ${km} km 内共 ${shownRecords().filter(passFilter).length} 个对象${btSuffix}`);
+    };
+    el("nbClear").onclick = () => {
+      nearbyCenter = null; nearbyRadius = null; nearbyBtypes = []; nearbyBtypesBld = [];
+      if (nearbyCircle) { overlayGroup.removeLayer(nearbyCircle); nearbyCircle = null; }
+      closeModal(); render(); toast("已清除周边筛选");
+    };
+  }
+  function pickNearbyCenter(rad) {
+    toast("请在地图上点选周边中心");
+    map.once("click", (e) => { nearbyCenter = { lat: e.latlng.lat, lon: e.latlng.lng }; nearbyRadius = rad; render(); fitToShown(); toast(`周边 ${(rad / 1000)} km 内共 ${shownRecords().filter(passFilter).length} 个对象`); });
+  }
+  function haversine(a, b) {
+    const R = 6371000, toRad = (x) => x * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  }
+  function fmtDist(m) { return m >= 1000 ? (m / 1000).toFixed(2) + " km" : Math.round(m) + " m"; }
+
+  /* ===================== v2.5.0 空间关系问答（需求四-a） =====================
+   * 支持自然语言：「某建筑物周边有几个感知设备」/「某感知设备周边有几个水工建筑物」
+   * 半径口径（Q6 用户答复）：以 km 为单位、用户填入、默认 0.5km；内部换算成米交给 haversine。
+   * 计算完全在本地完成（离线可用），同时把结果注入 AI 上下文，保证大模型回答与本地一致。
+   * ======================================================================== */
+  const SPATIAL_DEFAULT_KM = 0.5;
+  function radiusMetersOf(km) { const v = parseFloat(km); return Math.round((isFinite(v) && v > 0 ? v : SPATIAL_DEFAULT_KM) * 1000); }
+  function layerText(k) { return k === LAYER_BLD ? "水工建筑物" : "感知设备"; }
+  // 以 centerRec 为圆心、radiusKm 为半径统计某一层对象（排除圆心自身）
+  function neighborsOf(centerRec, targetLayer, radiusKm) {
+    const R = radiusMetersOf(radiusKm);
+    const arr = targetLayer === LAYER_BLD ? recordsBld : records;
+    const c = { lat: +centerRec.lat, lon: +centerRec.lon };
+    const hits = [];
+    if (!isFinite(c.lat) || !isFinite(c.lon)) return { km: R / 1000, hits: hits };
+    for (const r of arr) {
+      if (r.id === centerRec.id) continue;
+      const lat = +r.lat, lon = +r.lon;
+      if (!isFinite(lat) || !isFinite(lon)) continue;
+      const d = haversine(c, { lat: lat, lon: lon });
+      if (d <= R + 1e-6) hits.push({ rec: r, dist: d });
+    }
+    hits.sort((a, b) => a.dist - b.dist);
+    return { km: R / 1000, hits: hits };
+  }
+  // 解析自然语言问句 → { center, target, km }，解析不出返回 null
+  function parseSpatialQuestion(q) {
+    const text = String(q || "").trim();
+    if (!text) return null;
+    if (!/周边|周围|附近|方圆|范围|半径/.test(text)) return null;
+    let km = spatialRadiusKm;
+    const m = text.match(/(\d+(?:\.\d+)?)\s*(km|公里|千米|米|m)\b/i) || text.match(/(\d+(?:\.\d+)?)\s*(km|公里|千米|米|m)/i);
+    if (m) {
+      let v = parseFloat(m[1]);
+      const u = String(m[2]).toLowerCase();
+      if (u === "米" || u === "m") v = v / 1000;
+      if (isFinite(v) && v > 0) km = v;
+    }
+    // 找问句里提到的对象（取名字最长的那个，避免短名误命中）
+    const all = recordsBld.concat(records);
+    let hit = null, best = 1;
+    for (const r of all) {
+      const n = String(r.name || "").trim();
+      if (n.length >= 2 && text.indexOf(n) >= 0 && n.length > best) { hit = r; best = n.length; }
+    }
+    if (!hit) return null;
+    let target = isBld(hit) ? LAYER_DEV : LAYER_BLD;
+    const wantsDev = /感知设备|摄像机|球机|枪机|监控点|摄像头|设备/.test(text);
+    const wantsBld = /水工建筑物|建筑物|闸门|闸|桥梁|桥|涵洞|渡槽|跌水|倒虹吸|泵站/.test(text);
+    if (wantsDev && !wantsBld) target = LAYER_DEV;
+    else if (wantsBld && !wantsDev) target = LAYER_BLD;
+    return { center: hit, target: target, km: km };
+  }
+  // 生成可读结论（供本地回答与 AI 上下文共用，口径必然一致）
+  function spatialReport(centerRec, targetLayer, radiusKm) {
+    const st = neighborsOf(centerRec, targetLayer, radiusKm);
+    const centerLayer = isBld(centerRec) ? LAYER_BLD : LAYER_DEV;
+    const same = neighborsOf(centerRec, centerLayer, radiusKm);
+    const km = st.km;
+    const head = `${layerText(centerLayer)}「${centerRec.name}」周边 ${km} km 内有 ${st.hits.length} 个${layerText(targetLayer)}`;
+    const list = st.hits.slice(0, 10).map((h) => `　· ${h.rec.name}（${fmtDist(h.dist)}）`).join("\n");
+    const extra = st.hits.length > 10 ? `\n　… 另有 ${st.hits.length - 10} 个未列出` : "";
+    const sameTxt = `\n（同层参考：周边 ${km} km 内还有 ${same.hits.length} 个${layerText(centerLayer)}）`;
+    return {
+      center: centerRec, target: targetLayer, km: km, hits: st.hits, sameCount: same.hits.length,
+      text: head + (st.hits.length ? "\n" + list + extra : "") + sameTxt,
+      oneLine: head
+    };
+  }
+  // 本地直答（返回文本或 ""）
+  function spatialAnswerText(q) {
+    const p = parseSpatialQuestion(q);
+    if (!p) return "";
+    return spatialReport(p.center, p.target, p.km).text;
+  }
+  // 把本地空间关系统计注入 AI 上下文（AI 与本地口径一致，不靠模型猜）
+  function spatialContextFor(q) {
+    const p = parseSpatialQuestion(q);
+    if (!p) return "";
+    return "【本地台账空间关系统计（权威，请严格据此回答）】\n" + spatialReport(p.center, p.target, p.km).text
+      + `\n说明：半径 ${p.km} km 由本条问题/当前设置确定，距离按 WGS84 球面大圆距离计算。`;
+  }
+  // 在地图上圈出「中心 + 命中对象」
+  function spatialFocus(centerRec, hits, km) {
+    nearbyCenter = { lat: +centerRec.lat, lon: +centerRec.lon };
+    nearbyRadius = radiusMetersOf(km);
+    nearbyBtypes = []; nearbyBtypesBld = [];
+    render();
+    map.flyTo([+centerRec.lat, +centerRec.lon], Math.max(map.getZoom(), 15), { duration: 0.6 });
+    layerGroup.eachLayer((m) => { if (m._rid === centerRec.id) m.openPopup(); });
+  }
+  // 结构化弹窗：自然语言输入 + 选对象 / 目标类别 / 半径
+  function openSpatialStat(presetId) {
+    const pre = presetId ? findRec(presetId) : null;
+    const opts = recordsBld.map((r) => `<option value="${esc(r.id)}"${pre && pre.id === r.id ? " selected" : ""}>🏗️ ${esc(r.name)}</option>`).join("")
+      + records.map((r) => `<option value="${esc(r.id)}"${pre && pre.id === r.id ? " selected" : ""}>📡 ${esc(r.name)}</option>`).join("");
+    const html = `<div class="hint">问「某对象周边有几个（感知设备 / 水工建筑物）」。半径以 <b>km</b> 为单位、可直接填写，默认 <b>${SPATIAL_DEFAULT_KM}</b> km；计算在本地完成，离线可用。</div>
+      <div class="field"><label>自然语言提问（点「直接回答」即本地计算，无需联网）</label>
+        <textarea id="spQ" class="inp" rows="2" placeholder="例如：龚家湾子进水闸周边有几个感知设备（1km）"></textarea></div>
+      <button class="btn primary block" id="spAsk" style="margin-bottom:12px">💡 直接回答（本地）</button>
+      <div class="hint">或以结构化方式选择：</div>
+      <div class="field"><label>中心对象</label><select id="spCenter">${opts || '<option value="">（暂无对象）</option>'}</select></div>
+      <div class="field"><label>统计对象类别</label>${layerChips("spTarget", [LAYER_DEV])}</div>
+      <div class="field"><label>半径（km）</label><input id="spKm" class="inp" inputmode="decimal" value="${spatialRadiusKm}" style="max-width:140px"></div>
+      <div id="spOut" class="ai-out" style="white-space:pre-wrap;line-height:1.8"></div>`;
+    openModal("周边对象统计", html, `<button class="btn ghost" id="spClose">关闭</button><button class="btn ghost" id="spMap">在地图上圈出</button>`);
+    el("spClose").onclick = closeModal;
+    document.querySelectorAll("#spTarget .chip").forEach((c) => c.onclick = () => c.classList.toggle("on"));
+    el("spAsk").onclick = () => {
+      const q = (el("spQ").value || "").trim();
+      if (!q) return toast("请输入问题，例如「某某闸周边有几个感知设备」");
+      const p = parseSpatialQuestion(q);
+      if (!p) return (el("spOut").textContent = "未能从问题中识别出「本地台账里的对象名」或「半径」。请改用下方的结构化选择，或把对象名称写全（如：龚家湾子进水闸周边有几个感知设备）。");
+      spatialRadiusKm = p.km;
+      el("spKm").value = p.km;
+      const rep = spatialReport(p.center, p.target, p.km);
+      el("spOut").textContent = rep.text;
+    };
+    el("spMap").onclick = () => {
+      const cid = el("spCenter").value;
+      const c = findRec(cid);
+      if (!c) return toast("请先选择中心对象");
+      const km = parseFloat(el("spKm").value);
+      if (!isFinite(km) || km <= 0) return toast("请填写有效的半径（km）");
+      spatialRadiusKm = km; saveUI();
+      const target = readLayerChips("spTarget", [LAYER_DEV])[0] || LAYER_DEV;
+      const rep = spatialReport(c, target, km);
+      el("spOut").textContent = rep.text;
+      closeModal();
+      spatialFocus(c, rep.hits, km);
+      toast(rep.oneLine);
+    };
+  }
+  // 详情气泡「周边对象统计」入口
+  function spatialFor(id) {
+    const r = findRec(id); if (!r) return;
+    openSpatialStat(r.id);
+  }
+  function enterMeasure() {
+    measureMode = true; measurePts = [];
+    if (measureLine) overlayGroup.removeLayer(measureLine);
+    measureLine = L.polyline([], { color: "#ffb454", weight: 3, dashArray: "6 6" }).addTo(overlayGroup);
+    el("measurebar").classList.add("show");
+    el("measureInfo").textContent = "点击地图或监控点添加测量点";
+    el("map").style.cursor = "crosshair";
+    toast("测距：依次点击两点或监控点");
+  }
+  function exitMeasure() {
+    measureMode = false;
+    if (measureLine) { overlayGroup.removeLayer(measureLine); measureLine = null; }
+    overlayGroup.eachLayer((l) => { if (l._mpt) overlayGroup.removeLayer(l); });
+    measurePts = [];
+    el("measurebar").classList.remove("show");
+    el("map").style.cursor = "";
+  }
+  function addMeasurePt(ll) {
+    const latlng = L.latLng(ll.lat, ll.lon);
+    measurePts.push(latlng);
+    const idx = measurePts.length;
+    const mk = L.circleMarker(latlng, { radius: 5, color: "#ffb454", fillColor: "#fff", fillOpacity: 1, weight: 2 });
+    mk._mpt = true; mk.bindTooltip("点" + idx, { direction: "top" });
+    overlayGroup.addLayer(mk);
+    measureLine.addLatLng(latlng);
+    let total = 0;
+    for (let i = 1; i < measurePts.length; i++) total += haversine({ lat: measurePts[i - 1].lat, lon: measurePts[i - 1].lng }, { lat: measurePts[i].lat, lon: measurePts[i].lng });
+    const seg = measurePts.length >= 2 ? haversine({ lat: measurePts[measurePts.length - 2].lat, lon: measurePts[measurePts.length - 2].lng }, { lat: measurePts[measurePts.length - 1].lat, lon: measurePts[measurePts.length - 1].lng }) : 0;
+    el("measureInfo").textContent = `共 ${measurePts.length} 点，总长 ${fmtDist(total)}` + (measurePts.length >= 2 ? `（末段 ${fmtDist(seg)}）` : "");
+  }
+
+  async function syncExport() {
+    const txt = await Store.exportJSON();
+    IO.downloadText("视频设备运维一张图-我的改动.json", txt, "application/json");
+    toast("已导出我的改动");
+  }
+  function syncImport() {
+    pickFiles({ accept: ".json", onPick: async (files) => {
+      const f = files[0]; if (!f) return;
+      try { await Store.importJSON(await f.text()); DELTA = await Store.get(); merge(); render(); toast("已导入改动"); }
+      catch (e) { toast("导入失败：" + e.message); }
+    }});
+  }
+  async function reset() {
+    if (!confirm("重置将清除全部「我的改动」，恢复到基础数据。确认？")) return;
+    await Store.clear(); DELTA = await Store.get(); merge(); render(); toast("已重置为基础数据");
+    kbLog("重置为基础数据", {});
+  }
+  function help() {
+    const html = `<div class="hint" style="line-height:1.9">
+      <b>浏览</b>：拖动地图、缩放查看监控点；点击标记看详情与照片。<br>
+      <b>搜索</b>：顶部输入框按名称实时筛选。<br>
+      <b>筛选</b>：菜单→筛选，可多选摄像机类型（如 节制闸 / 跌水）与机构（如 温汤所）；选机构会自动定位到其范围中心。<br>
+      <b>添加</b>：菜单→添加，点「在地图上点选坐标」或手填经纬度，可上传多张照片（正面/背面/侧面…）。<br>
+      <b>编辑/删除</b>：点开标记 → 编辑 / 删除。<br>
+      <b>导入</b>：支持 ovkmz / kmz / kml / csv / ovobj / obj（奥维导出格式；ovobj/obj 为文本坐标，可含中文表头，纯文本无照片）。<br>
+      <b>导出</b>：ovkmz/kmz 含照片，可被奥维「导入」识别；csv 为属性表；ovobj 为纯文本坐标文件，可被本 App 原样再导入。<br>
+      <b>我的改动</b>：所有增删改存在本机（IndexedDB），离线可用；菜单→导出/导入我的改动 可备份或迁移。<br>
+      <b>底图</b>：右上角 🚫/🗺 按钮开关天地图底图；默认关闭（仅显示点位，省流量），开启需联网。顶栏「矢量/影像」按钮可在<b>矢量地图</b>与<b>影像地图</b>间切换。<br>
+      <b>定位</b>：菜单→定位我的位置；若未授权，App(安卓)会自动跳转系统定位设置，浏览器请手动开启站点定位权限。<br>
+      <b>获取经纬度</b>：菜单→获取经纬度，可获取「我的位置」坐标、在地图上点选坐标、或搜索监控点列出其坐标；支持一键复制（格式「纬度, 经度」）。<br>
+      <b>导航</b>：点开监控点 → 导航，优先用「我的位置」为起点，跳转高德等第三方导航软件（坐标为 WGS84 自动转换）。<br>
+      <b>测距</b>：菜单→测距，依次点击地图或监控点，自动绘制折线并显示累计距离；退出可点浮条"退出"、再点一次菜单"测距"、或按返回键/Esc。<br>
+      <b>周边</b>：菜单→周边搜索，选中心（我的位置 / 地图中心 / 某监控点 / 地图点选）+ 半径，列出并高亮范围內监控点。<br>
+      <b>列表快速定位</b>：顶部 ☰ 打开监控点列表，每项右侧「快速定位 →」点一下即飞到该监控点地图位置并关闭列表。<br>
+      <b>找不到主菜单？</b>：在地图任意处<b>快速连点三下</b>，即可关闭卡住的弹窗/列表并重新打开主菜单（顶部 ≡ 也始终可用）。<br>
+      <b>关闭弹窗</b>：点右上角 ×（圆形按钮）、点弹窗外灰色遮罩、或按返回键/Esc，三种方式皆可；列表与抽屉也有各自的关闭 ×。<br>
+      <b>离线</b>：App 与数据可离线使用；底图需联网（大范围离线瓦片体积过大）。<br>
+      <b>安卓</b>：Chrome 打开 → 右上角 ≡ → 添加到主屏幕，即成为 App。<br>
+      <b>关于</b>：菜单→关于，含「建议使用环境」与「制作环境（本机运行环境）」；更完整说明见应用文档《用户使用文档》。
+      <hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+      <b>📚 知识库（智能框架）</b>：菜单→知识库查询 可对话式检索本机知识库（不依赖联网）；<b>导入知识库文件</b>支持 md / txt / html 多选（主流知识库 Obsidian/语雀/Notion 兼容，元数据自动还原）；<b>导入外部文件存入知识库</b>把 pdf / docx / xlsx / html / csv / 图片 在<b>应用内零依赖</b>智能转为 Markdown 入库，扫描件 PDF 与图片自动<b>内置 OCR</b>识别文字，全程进度条；保存即<b>切片+向量化</b>（句子级切片，尽量保持语句完整），支持<b>混合检索（关键词+向量）、反向/模糊/语义查询</b>；导出支持 md / txt / html / zip。<br>
+      <b>🧠 记忆管理</b>：知识库内置 Hermes 自我学习机制，AI 查询/更新/纠错会自动沉淀记忆，下次交互更贴合你的业务；与已接入大模型有机融合（提示词自动拼装知识库精准片段 + 自学习记忆）。<br>
+      <b>⬆️ 升级与备份</b>：菜单→设置→软件升级，公开版/内部版均经<b>百度网盘自动升级</b>（填入 latest.json 直读地址即可，下载填网盘分享链接）；升级前先「升级数据导出」（可自定义文件夹/文件名，默认「感知设备一张图+日期.bak」），该包可回灌「升级数据导入」（会覆盖本机全部数据，已明确提示风险）。<br>
+      <b>📝 备忘录</b>：感知「写备忘录」——所见即所得（字体/字号/表情/图片/表格），默认绑定感知设备，关键词筛选，导出 MD+JSON，内容镜像知识库供 AI 查询。<br>
+      <b>🤖 智能 AI</b>：智能查询/智能问询/AI 更新/纠错/对话，均基于已接入的大模型（设置→大模型 AI 设置 配置密钥与地址）；联网开启时本地无果可联网兜底，答案标注来源。<br>
+      <hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+      <b>🔎 知识库增强（v2.4.8）</b>：<b>模糊检索</b>错字 / 缺字 / 语序不同也能命中（结果带相关度百分比）；<b>提示词生成</b>把「问题 + 知识库最相关片段 + 长期记忆」自动拼成完整提示词，可复制自用或直接投喂大模型；<b>存疑与反向查询</b>可对任一条目打标并反查知识库辅助核实；设置新增「<b>通过 GitHub 升级</b>」（内部版查 *-internal-4060、公开版查 *-public-4060，与网盘双通道隔离一致）。<br>
+      <b>🔐 启动口令保护（内部版，v2.4.9）</b>：首次启动校验启动口令，支持「记住本机 / 修改口令 / 忘记口令」；忘记口令时请联系软件开发者或管理员协助重置（出厂口令见交付说明）。公开版与古建为单通道发布，无启动口令。<br>
+      <b>📶 智能传输提示</b>：本机导入 / 导出（不走网络）不再弹流量提醒；小文件直接执行；仅大文件（≥50MB）弹「操作提示」并显示文件大小与耗时提醒。<br>
+      <b>🏛️ 局 / 管理处到底管什么（v2.5.0 答疑）</b>：不是摆设，六个环节都在用——① <b>筛选</b>（管理处 / 管理所多选，直接决定地图与列表命中）；② <b>新增 / 编辑表单</b>的「局 / 管理处」下拉；③ <b>导出 CSV</b> 第 2 列「管理处」；④ <b>导出文件夹路径</b>（按 管理处 / 所 / 段--类型 分层）；⑤ <b>AI 机构问询</b>（按管理处分组统计）；⑥ <b>改名级联</b>（在设置里改管理处名，会同步更新所有设备/建筑物该字段）。<br>
+      <b>🔁 名单一致性（v2.5.0）</b>：「筛选 → 管理处 / 管理所」与「设置 → 机构层级与默认名称管理」用的是<b>同一份名单、同一顺序</b>（默认值 → 🔒 基础名单 → 其余），逐项对应；基础名单为「清源灌区管理处」与 9 个所，不可删除/改名，自行添加的显示为「自定义」可改名或删除。<br>
+      <b>🏗️ 双数据层（v2.5.0）</b>：感知设备与「水工建筑物」是<b>两个完全独立的数据层</b>——文件独立（data.js / data_buildings.js）、本地存储键独立（delta / delta_bld）、导入通道独立、id 前缀独立（<code>bld:</code>）。导入水工建筑物<b>永远不会影响或覆盖感知设备</b>；原来的感知设备导入 / 导出行为保持不变。筛选 / 查询 / 导航统一由「<b>对象类别</b>」选择器决定看哪一层，默认只勾「感知设备」。<br>
+      <b>🖼️ 图片预览增强</b>：电脑端鼠标<b>拖拽平移 + 滚轮缩放</b>（1~5 倍），手机端<b>双指缩放 + 拖动</b>，长按可调出菜单；键盘 + / − / 方向键 / 0 复位亦可用。<br>
+      <b>📝 笔记导出</b>：备忘录 / 运维记录 / 游记支持一键<b>导出 Word（.doc）</b>与<b>导出 PDF</b>（走系统打印「另存为 PDF」）。<br>
+      <b>🧭 对象智能检索</b>（菜单 → 对象智能检索）：<b>参数反查</b>（按参数键 / 值反查对象）、<b>分类统计</b>（按类型 / 管理所 / 参数汇总）、<b>类型定义入库</b>（向量化后参与检索）、<b>预案文档关联</b>、<b>生成说明文档</b>（可导出 Word / PDF）、<b>PDF 转 Word</b>。<br>
+      <b>📊 表格导入导出规范化</b>：导入奥维导出的 CSV 自动识别编码（UTF-8 / GBK / GB18030 / Big5），不再报「未找到名称列」；导出 CSV 第 8 列为 <b>Comment</b>、多参数以「<b>|</b>」分隔并新增「文件夹」列（管理处 / 管理所 / 段--类型）；导出的表格可原样回导；ovkmz 备注按「键 : 值|」换行输出，与奥维一致。<br>
+      <b>🏷️ 管理所智能识别</b>：9 所标准名单模糊匹配 + 清源河 / 水库特例归并 + 「站」归为所的下一级；导入 / 导出 / 筛选三处口径统一。<br>
+      <b>⛶ 图片 / 文档导出</b>：对象智能检索与笔记页均可「导出 PDF」；导出的 PDF 直接用系统打印对话框「另存为 PDF」保存。<br>
+      <b>🐞 错误日志</b>：菜单→信息与帮助→错误日志，全局捕获运行错误（环形缓冲），可查看/复制/清空，便于反馈排查。
+    </div>`;
+    openModal("帮助", html, `<button class="btn ghost" onclick="APP.close()">知道了</button>`);
+  }
+  function getEnvInfo() {
+    const ua = navigator.userAgent || "";
+    let os = "未知", osVer = "";
+    if (/Windows NT 10/.test(ua)) { os = "Windows"; osVer = "10 / 11"; }
+    else if (/Windows NT 6\.3/.test(ua)) { os = "Windows"; osVer = "8.1"; }
+    else if (/Windows NT 6\.1/.test(ua)) { os = "Windows"; osVer = "7"; }
+    else if (/Windows/.test(ua)) { os = "Windows"; }
+    else if (/Android (\d+(?:\.\d+)?)/.test(ua)) { os = "Android"; osVer = RegExp.$1; }
+    else if (/iPhone|iPad/.test(ua)) { os = "iOS"; }
+    else if (/Mac OS X/.test(ua)) { os = "macOS"; }
+    else if (/Linux/.test(ua)) { os = "Linux"; }
+    let device = "";
+    const dm = ua.match(/;\s*([^;()]+?)\s+Build\//);
+    if (dm) device = dm[1].trim();
+    if (!device) {
+      if (/iPhone/.test(ua)) device = "iPhone";
+      else if (/iPad/.test(ua)) device = "iPad";
+      else if (/Android/.test(ua)) device = "Android 设备";
+      else if (/Windows/.test(ua)) device = "PC";
+      else device = "未知设备";
+    }
+    let engine = "浏览器";
+    if (/Edg\//.test(ua)) engine = "Edge";
+    else if (/Chrome\//.test(ua)) engine = "Chrome";
+    else if (/Firefox\//.test(ua)) engine = "Firefox";
+    else if (/Safari\//.test(ua)) engine = "Safari";
+    if (window.AndroidBridge) engine += "（App WebView）";
+    const cpu = navigator.hardwareConcurrency ? navigator.hardwareConcurrency + " 核" : "未知";
+    const mem = navigator.deviceMemory ? navigator.deviceMemory + " GB" : "未知";
+    let gpu = "未知";
+    try {
+      const c = document.createElement("canvas");
+      const gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+      if (gl) {
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        if (dbg) gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "未知";
+      }
+    } catch (e) {}
+    const sw = window.screen ? window.screen.width : 0, sh = window.screen ? window.screen.height : 0;
+    const dpr = window.devicePixelRatio || 1;
+    const screen = (sw && sh) ? `${sw}×${sh} @${dpr}x` : "未知";
+    return { os, osVer, device, engine, cpu, mem, gpu, screen };
+  }
+  // 版本变更：单一来源 APP_VER + 内置变更摘要（与文档同步维护）
+  const CHANGELOG = [
+    ["v2.5.0", "2026-09-11", [
+      "🏗️ 双数据层（v2.5.0 核心）：感知设备与水工建筑物是<b>两个完全独立的数据层</b>——文件（data.js / data_buildings.js）、本地存储键（delta / delta_bld）、导入通道、id 前缀（<code>bld:</code>）全部独立；<b>导入水工建筑物永远不会影响或覆盖感知设备</b>；原来的感知设备导入/导出行为完全保留",
+      "新增菜单「添加水工建筑物」/「添加地点」（如天安门等有名且坐标无歧义的位置），「导入水工建筑物」独立子菜单：只写建筑物层、同 id 覆盖并提示",
+      "筛选 / 查询 / 导航统一由「<b>对象类别</b>」选择器控制看哪一层（默认勾选感知设备；可加选水工建筑物 / 命名地点）；新建建筑物有「对象类别」专属表单字段",
+      "智能问答空间关系：「某建筑物周边有几个感知设备 / 某感知设备周边有几个水工建筑物」自然语言直接问，半径以 km 为单位默认 0.5 km；空间统计菜单可手动选中心 + 半径，逐层列出命中",
+      "AI 上下文新增「空间关系统计」注入块：实时计算 0.5 km 半径内「感知设备 ⇄ 水工建筑物」互相数；与原有机构层级统计口径并列",
+      "机构名单一致性：管理处 / 管理所在「筛选」与「设置 → 组织与类型管理」同一份、同顺序；筛选打开前 pruneFilter 自动清失效条件",
+      "导出文件自动分流——选水工建筑物即只导建筑物层，选感知设备即只导设备层；导出 Word/PDF 同步按当前对象类别",
+      "升级包 schema 升到 5：包内含 <code>delta_bld</code> 字段；旧版 v2.4.x 升级包导入兼容（仅写设备层，写入 delta_bld 为空）"
+    ]],
+    ["v2.4.9", "2026-09-11", ["启动口令保护（内部版）：首次启动校验启动口令，支持「记住本机 / 修改密码 / 忘记密码」；忘记口令提示改为「请联系软件开发者 / 管理员协助重置」，出厂口令仅见交付说明；对话框、帮助与提示中一律不出现明文口令", "智能传输提示：本机导入 / 导出（不走网络）不再弹流量提醒、小文件直接执行不打扰；仅大文件（≥50MB）改弹「操作提示」并显示文件大小与耗时提醒", "子菜单「隐藏 / 收藏」按钮与菜单文字间距拉大，避免误触（仍为长按触发 + 二次确认）", "修复导入「未找到名称列」：奥维导出的 GBK / ANSI 编码 CSV 不再乱码——按 BOM / UTF-8 / GB18030 / GBK / Big5 自动识别编码", "CSV 导出列规范化：第 8 列「参数说明」改为「Comment」，多参数分隔符由「;」改为「|」，并新增「文件夹」列（管理处 / 管理所 / 段--类型），与奥维导入格式对齐", "导入兼容自身导出：参数分隔符「|」「;」与半角「:」/ 全角「：」均可解析，导出的表格重新导入后参数可正常显示到感知设备详情", "ovkmz 导出备注：参数按「键 : 值|」并换行组织，与奥维原装格式一致", "管理所智能识别：9 所标准名单模糊匹配 + 清源河 / 水库特例归并 + 「站」归为所的下一级；导入、导出、筛选三处口径统一", "导出前实时统计「将导出 N 个感知设备 / M 张照片」（随范围与管理所勾选联动）；照片导出补 full → dataUrl → thumb 兜底链，三者皆空时明确提示并写入错误日志", "图片预览增强：电脑端支持鼠标拖拽平移 + 滚轮缩放（1~5 倍），手机端支持双指缩放 + 拖动 + 长按菜单，另支持键盘 + / - / 方向键 / 0 复位", "备忘录 / 设备运维记录新增「导出 Word」「导出 PDF」（PDF 走系统打印「另存为 PDF」）", "新增「对象智能检索」菜单组：参数反查 / 分类统计 / 类型定义入库（向量化）/ 预案文档关联 / 生成说明文档 / PDF 转 Word，并支持导出 Word 与 PDF"]],
+    ["v2.4.8", "2026-09-07", ["知识库智能化：新增「知识库模糊检索」——错字/缺字/语序不同也能命中（如「跌水闸」可命中「跌水节制闸」），结果带相关度百分比，可对任一条目直接反向查询或标为存疑", "新增「提示词生成」：问题 + 知识库最相关片段 + 长期记忆自动拼装成完整提示词，可复制自用或直接投喂大模型；AI 查询结果新增「查看提示词」按钮", "新增「AI 记忆（Hermes）」：查询/纠错/存疑自动沉淀为记忆并在提示词中引用，支持查看、按关键词检索、一键清空（不影响知识条目）", "新增「存疑与反向查询」：不确定的内容可打存疑标记（标签：存疑/待核实），系统用其内容反向检索知识库给出最相关条目辅助核实；AI 查询结果可一键「标为存疑」", "修复重要缺陷：AI 调用时已生成知识库上下文却仍把原始问题发给模型（知识库等于没接上），现已真正随请求发送", "设置新增「通过 GitHub 升级」子菜单（内部版查 *-internal-4060、公开版查 *-public-4060，与网盘双通道隔离一致；私有库支持填 GitHub 只读 Token）", "菜单可隐藏：长按任意菜单项选择隐藏，设置中「恢复隐藏子菜单 / 隐藏子菜单列表」随时恢复，恢复入口受保护不会被自己锁死", "导出位置可自定义：设置「导出文件位置」预配置默认文件夹，导出前可询问（批量导出只问一次），知识库导出默认名改为「知识库YYYY-MM-DD」", "奥维 ovkmz 互通修复：导入剥除 UTF-8 BOM（原装文件不再报 xml 语法错误）、附件路径归一（照片不再只显示占位符）；导出照片目录对齐原装 ovatta/、参数分隔符对齐「键 : 值|」"]],
+    ["v2.4.7", "2026-09-05", ["升级按钮与自动升级：设置菜单新增「检查新版本」一键检测（百度网盘）；发现新版自动下载安装包（直链走 fetch 分块下载+进度、下载完成提示安装位置；百度网盘分享页自动打开并备好提取码），可在升级对话框关闭自动下载", "感知与水利保持公开/内部双通道隔离；古建改单通道（数据本身公开）", "发版自动上传百度网盘：构建收尾自动把安装包 + latest.json 上传到网盘「一张图发布/感知设备运维一张图/<通道>/」目录（未登录时优雅跳过）"]],
+    ["v2.4.6", "2026-09-05", ["知识库智能框架：保存即「切片+向量化」——句子级切片（尽量保持语句完整，长段按句切且重叠衔接），离线哈希向量（中英文混排，零外部依赖）+ 关键词命中 = 混合检索；支持反向查询（内容→条目）、模糊/语义查询、智能生成提示词", "引入记忆管理（MEMORY）与 Hermes 自我学习机制，并与已接入大模型有机融合（AI 提示词自动拼装 KB 精准片段 + 自学习记忆），统一上下文检索入口", "升级体系升级：感知内部版与公开版均可经百度网盘自动升级（latest.json 直读清单 + download 填网盘分享链接）；升级数据导出支持自定义文件夹/文件名（默认「感知设备一张图+日期.bak」），导出文件可回灌导入并提示覆盖全部数据风险", "修复「写备忘录」菜单 script error：journal.js 全面 ES5 兼容 + 全局 helper 缺失时 fail-loud；app.js 顶部注入 NodeList.forEach 等老 WebView 兼容垫片，杜绝白屏与裸 script error", "内置轻量 OCR（tesseract.js 本地资产 chi_sim/eng，离线）：扫描件 PDF 与 jpg/png/bmp/webp 图片自动识别文字入库，懒加载不拖启动", "新增「信息与帮助→四端功能对照单/版本变更/功能介绍」全部同步到最新（含 v2.4.4~v2.4.6 新增能力）"]],
+    ["v2.4.5", "2026-09-05", ["知识库格式改造（主流知识库兼容）：「导出知识库」由 zip 改为单文件 md / txt / html——md 为 YAML front matter 格式（title/tags/type/updated/id），Obsidian / Joplin / 语雀 / Notion 等主流知识库可直接导入；zip 完整备份在导出对话框保留兼容", "「导入知识库文件」支持 md / txt / html 多选导入，front matter 元数据自动还原（标题/标签/类型）；旧 .zip 备份仍可导入", "新增「导入外部文件存入知识库」智能转换：pdf / docx / xlsx / html / csv / json 等非 md 格式，应用内零依赖智能转为 Markdown 后入库——pdf 提取文本流（扫描件/加密件明确报错引导，不静默）、docx 保留标题/列表/表格、xlsx/csv 转标准 md 表格；转换全程进度条指示，支持多文件批量", "知识库查询效率优化：检索索引（标题+标签+正文小写串）按条目缓存、写入/删除自动失效；导出正文剔除可再生成的操作日志，降低 token 与文件体积"]],
+    ["v2.4.4", "2026-09-04", ["三端新增升级体系：设置菜单「软件升级/升级数据导出/升级数据导入」——升级前提醒备份、导出包旧版可导入（跨版本数据兼容含照片）、公开/内部通道隔离不交叉、无新版明确提示", "图文笔记引擎 journal.js：古建「写游记」、水利/感知「写备忘录/导出备忘录」——所见即所得（字体/字号/表情/图片/表格），默认绑定对象，关键词筛选（名称/时间/摘要），导出 MD+JSON，内容镜像知识库供智能AI查询", "修复地图气泡「分享」按钮 script error（APP.shareBuilding 未导出，即用户报「点详细→运行错误」根因）；古建筛选多命中改绿色虚线最小包围圆", "新增「信息与帮助→错误日志」：全局错误捕获（onerror/unhandledrejection 环形缓冲300条）可查看/复制/清空，便于反馈排查",     "公开版策略落地：双通道构建——公开版（脱敏拟真数据「清源灌区」+ 公开通道）/ 内部版（完整数据 + 内部通道），升级通道隔离互不交叉；公开版智能AI装后即用（大模型接口内置）", 
+    "筛选多命中圈选三端统一：绿色虚线最小包围圆（Ritter 算法，刚好圈住+视野刚好完整显示），单命中直接定位", 
+"长按菜单收藏补振动反馈（navigator.vibrate）"]],
+    ["v2.4.1", "2026-08-30", ["同步水利端 v2.4.1：占位符友好化 + pickRecord 试试搜芯片 + 多选默认值（所字段），感知端 DIMS.offices 含全部 9 所完整名单（地下水源所/温汤所/云龙山所/翠屏山所/埝湾所/水库所/北台峪所/柳林庄所/清源河所）", "周边搜索按类型 + 三选项（当前位置/地图选坐标/选建筑物）；导出感知/导出照片管理所选项 9 所完整，按所选范围自动匹配", "zip 名称弹性层次匹配：matchOrgScope 按最长最具体级别优先锁定（避免 翠屏山.zip 强行先匹配局漏掉所）", "快捷常用视觉区分：⭐ 前缀 + 金边（同水利端样式）", "新增「信息系统分类」替代原建筑物类型，分类维度管理器涵盖 5 项：信息系统分类/感知子系统/中类/子类/信息传输方式"]],
+    ["v2.4.0", "2026-08-28", ["组织五级化：监控点组织层级扩为 局/管理处/所/站/段（默认：水利工程管理中心 / 清源灌区管理处 / 水库所），添加监控点表单、筛选、导入导出全链路同步；新配置键 shipin_orgcfg_v2 自动迁移旧数据", "设置新增三项管理：①机构层级与默认名称管理（增删改 局/管理处/所/站/段 + 默认值编辑，重命名级联同步到所有监控点）②分类维度管理（信息系统分类 / 感知子系统 / 中类 / 子类 / 信息传输方式 五维度统一管理）③快捷常用设置", "新增 4 个分类维度：信息系统分类（原摄像机类型）/ 感知子系统 / 中类 / 子类 / 信息传输方式，表单下拉选择、筛选多选、维度管理器增删改级联同步", "导出文件名与文件夹层次可选项：导出照片支持文件名组合段（局/管理处/所/站/段/监控点名）与文件夹层次组合段；导出感知/导出照片管理所选项 9 所完整名单自动同步，按所选范围自动匹配对应管理所", "zip 三级匹配导入：压缩包文件名 → zip 内文件夹 → 照片文件名；zip 名命中机构（所→站→段→管理处→局，如 翠屏山.zip → 优先在翠屏山所范围内匹配）后整包收窄匹配范围；安卓原生桥接 zip 文件名", "新增「快捷常用」主菜单：置于查询/筛选之下首位，右键/长按任意菜单项快速添加，或到设置勾选；原子菜单全部保留", "菜单调序：查询 筛选 快捷常用 地图与位置 数据管理 传输与共享 智能分析 智能AI 设置 信息与帮助；「大模型 AI 设置」并入智能AI组、「关于/帮助」并入信息与帮助组（功能全保留）", "修复筛选弹窗照片卡顿/死机：refreshHit 加 200ms 防抖（oninput 高频触发全库循环，4000+ 记录时会卡 UI）", "修复文件夹上下文管理所匹配 bug：旧代码用 r.office 原文比对（温汤管理所）导致范围限定失效，改为 normOffice 规范化比对（温汤所）"]],
+    ["v2.3.0", "2026-08-29", ["本地优先·AI 与知识库高度融合：智能查询答案自动标注来源——本地知识库命中标「📖 本地知识库已参考」，联网兜底标「🌐 联网」，离线纯本地标「📖 本地」；发行版预内置知识库骨架，首次启动离线即时导入，无网环境开箱即用", "新增「知识库查询」菜单：对话式检索本地知识库（不依赖联网 AI），命中片段按相关度排序展示", "AI 智能更新可人工把关：生成的简介与参数表在应用前可逐项编辑修正，改动高亮对比，确认后才写入", "机构/库渠在线维护：筛选弹窗新增 ⚙️ 维护入口，支持增改删机构与库渠、改名全链路联动；「库渠」录入由手输改为下拉选择", "周边搜索按类型筛选：周边 N 米内可勾选摄像机类型，只看关心的类型", "导出文件名自定义：监控点信息与照片导出均可自定义文件名（留空按机构命名）", "关键词历史：筛选弹窗收纳最近搜索关键词，点击即用、可清空", "修复筛选弹窗「照片」分组点击异常"]],
+    ["v2.2.1", "2026-08-23", ["新增「退出当前页面」常驻按钮（约束5）：顶栏✕按钮调用 APP.back() 逐级关闭弹窗>抽屉>测距>列表，无物理返回键的 Win/统信/苹果端也能随时退出当前页面；并增强 back() 主页兜底（已在主页则点✕关闭抽屉/提示三击空白唤主菜单），与既有三击空白弹主菜单并存", "四端同步（2026-08-23）：将含 P5（智能分析/旅游打卡/智能分析）+ 退出按钮的最新前端同步至 Win11(exe·msi)、统信UOS龙芯(mips64el deb)、苹果PWA(静态源)；统信端纠正架构——龙芯3A4000为 mips64el，弃用此前误打的 amd64 deb，改用浏览器壳方案打 mips64el deb（Electron 无 mips 二进制），功能与其余端一致且离线可用", "四端功能对照表产出（约束3）：逐能力列出安卓/Win/统信/苹果差异，不强行一致"]],
+    ["v2.2", "2026-08-21", ["照片导出「没有可导出照片」根因防护：Web/PWA/UOS/Win 上该提示通常是导入未成功（照片数据未落库），改为给出可操作指引（UOS 8G 用目录流式导入、其他平台批量导入、安卓导出 zip 复制），而非只报一句", "照片导出覆盖提示：目标文件夹已有同名照片时，原生 exportFilesToTree 会静默覆盖，改为先弹确认（覆盖导出/取消），避免误覆盖", "删除 6 张孤立内置样张（images/ 下无引用占位图），减小体积"]],
+    ["v2.01", "2026-08-20", ["局域网互传端口 8888→7205 统一（与水利/古建一致）", "注：水利源工程的「添加监控点坐标优先两步式」为交互层优化，视频线沿用单步表单（数据模型一致、坐标字段完整），两步式交互改造待专项迭代"]],
+    ["v2.0", "2026-08-19", ["地图右侧新增悬浮控件组：收藏当前窗口（⭐）/ 返回收藏窗口（📍），收藏范围持久化（Store.ui.favs），多窗口可列表选择返回", "zip 照片导入卡死根治（中央目录解析 + 超时保护 + 老浏览器降级）", "zip 多层目录支持（完整相对路径 + 逐层匹配）", "机构名去「管理」两字全链路统一（温汤管理所→温汤所；查询筛选「管理」可忽略）", "标记颜色/形状自定义 + 左下角图例"]],
+    ["v1.99", "2026-08-13", ["桌面版回灌增强（2026-08-19）：奥维导入时 Folder 名含「段--类型」自动补全 btype/type（如 柳林庄段--进水闸 → station=柳林庄段、btype=进水闸、type=柳林庄段--进水闸），三端（Android/桌面）解析结果一致", "真机三次修复（2026-08-18 下午）：导入 ovkmz 报「IO.sha256Hex is not a function」根治——io.js 定义了 sha256Hex 但导出表漏列（v1.8.0 后重构丢失），doImport 内容去重步骤一调即崩；已补导出 + 加 sha256: {hex} 兼容别名，并交叉核对 app.js 全部 31 个 IO.* 调用与导出表仅此一处缺口；真实文件 harness 扩至 16/16（含去重哈希断言）", "真机二次修复（2026-08-18 下午）：导入「点了没反应」根治——原生 onShowFileChooser 弃用 params.createIntent()（Chromium 按 accept 解析生成的 ACTION_GET_CONTENT + EXTRA_MIME_TYPES 会把 .ovkmz/.7z 等无 MIME 映射扩展名混入非法列表 → 部分机型系统选择器空白/打不开），改统一 ACTION_OPEN_DOCUMENT + */*：系统 DocumentsUI 必然可打开、全部文件可见可选，格式由前端扩展名校验（ovkmz/kmz/zip/7z/csv/xls/xlsx/kml 全覆盖）；JS pickFiles 增加 2.5s 非静默失败看门狗（选择器确未弹出时 toast 引导，杜绝「点了没反应」静默失败）", "真机复核修复（2026-08-18）：①导入 ovkmz 选不了文件——Android 系统选择器按 MIME 过滤，.ovkmz 无 MIME 映射被隐藏；文件选择 accept 改为「扩展名+MIME+*/*」兜底，全部文件可选、格式由导入端校验；②照片 zip 导入同样修复 .zip/.7z 无法选择问题（.7z 无标准 MIME 映射）；③奥维 ovkmz 真实结构兼容——实测 D 盘《视频设备运维基础信息.ovkmz》（557 个监控点 + ovatta/ 照片）：OvAttaItem 照片路径在元素文本内容（非 Url/FileName 属性）现可解析、description「键 : 值|」参数现可导入、Folder 层级映射为机构/库渠；导出改为奥维原生 OvAttr/OvAttaList/OvAttaItem 文本路径结构 + OvCoordType=CGCS2000，导出文件既被本 APP 识别也可导入奥维，往返一致", "核心 Bug 修复：击穿导入「点击 csv 等无反应」——根因是 WebView 下局部 input 无引用被 GC，onchange 永不触发；改为统一 pickFiles 持有引用并挂 DOM，8 个导入入口（单文件/文件夹/多选/zip×2/网盘备份）全部修复，Node 实跑验证导入链路畅通", "奥维格式互通加固：kmz/ovkmz 导入现兼容奥维真实导出结构——解析 OvAttaItem/Attachment 的 Url、description 中 img src，照片按「全路径 > files/ 前缀 > basename 兜底」三重解析取回，不再依赖本 APP 专属命名；本 APP 导出（含附件照片）仍可被奥维识别导入，往返一致", "筛选后导出默认导出筛选集（既有），并在导出弹窗顶部新增「当前导出范围」醒目提示条，明确是筛选结果还是全部监控点", "全局「执行中，请稍后」遮罩补全到导出打包路径（含照片 kmz/ovkmz 打包较慢时显式提示）；导入/批量导入/照片导出/网盘等路径均已覆盖", "查询/筛选置顶与结果可视化保持：筛选实时命中计数（监控点数+照片数）、蓝色虚线圆圈圈选并居中、单点跳转/无结果提示；智能匹配默认勾选最可能对并支持便捷确认；三击空白弹主菜单、每页退出按钮、灯箱放大等既有能力复核无回归"]],
+    ["v1.9.9", "2026-08-17", ["修复监控点导入/导出（bug①）：新增 xls / xlsx 格式支持，与 csv / kmz / kml 并列；导出统一属性表（名称/机构/库渠/摄像机类型/经纬度/自定义参数/说明），导入端 superset 解析器兼容旧奥维/清源河字段与 BIFF8 旧版 Excel（旧格式明确拒绝并提示），导出文件可原样再导入（往返一致，Node 实证 92 项全 PASS）", "修复照片导入/导出 zip（bug②）：导出压缩包内嵌 manifest.json（文件名→监控点 id 映射），重新导入时确定性自动绑定、零人工确认；无 manifest 的旧包仍走智能模糊匹配兜底，无回归", "修复批量导入 xlsx 静默失败（bug③）：文件夹/多选/zip 三条批量通道此前都把 xlsx 当纯文本喂给 CSV 解析器（zip 通道更是固定传空串），结果「解析 0 条、界面无任何报错」；改为 xlsx 走字节流解析、xls 走 BIFF 检测解析、未知扩展名显式抛错、读取失败也提示并推进计数（不再卡住导入状态）", "修复导出列勾选失效 + 文件名错位（bug③）：IO.exportCsv/exportChaoheFile 签名为 (records, root, cols)，调用侧误按 (records, cols) 传参，导致导出文件名变成「name,机构,…」列名串、用户勾选的导出列被完全忽略；现按正确位置传参", "修复导入文件选择器挡掉 Excel（bug④）：单文件导入入口 accept 补 .xls/.xlsx，此前用户在系统选择器里根本看不到这两类文件", "查询/筛选置顶、实时命中计数、蓝色虚线圆圈圈选、单/多/无结果跳转、退出按钮/三击空白进主菜单、智能匹配确认、长操作「执行中，请稍后」遮罩等既有能力逐模块复核，确认无回归"]],
+    ["v1.9.7", "2026-08-17", ["彻底修复导出>30张照片 0 字节：原生 exportCommit 改为 ByteArrayOutputStream 分片增量 Base64 解码（消除整包巨型 String 一次性 decode 的 OOM/静默空写），JS 侧补 `zipBytes.length<=22` 空包拦截；三套 APP 真编译验证", "修复导入照片丢失：importKmzBuffer 照片查表前缀不匹配（`files[fn]` vs `files['files/'+fn]`），改 fallback 取回，Node 实证取回 0→1 张", "导入过程新增「正在解析导入文件，请稍后…」全屏遮罩（busy）", "新增监控点详情「分享」按钮：该监控点照片+信息打包 zip 走系统分享面板，可选微信/QQ/飞书等", "灯箱照片支持「放大」：双击/双指捏合 + 拖拽平移，按钮一键还原", "筛选默认导出筛选结果、KMZ/奥维互通、菜单调浅、查询/筛选置顶、蓝圈跳转、退出/三击主菜单、智能匹配等既有能力保持；shipin/gujian 同步"]],
+    ["v1.9.6", "2026-08-16", ["紧急修复「导出照片压缩包 0 字节」：根因①zip 中文文件名未置 UTF-8 标志位（local+central 双置位），部分解压工具按 CP437 解析→文件名乱码、照片「看不见」；②整包 base64 经 JSInterface 单次传给原生，超 Binder 1MB 事务上限→写入 0 字节。改为分块导出（exportStart/Append/Commit，每片≤512KB）+ zip UTF-8 标志 + 原生写盘后回调 APP.onExportResult 才提示成功（杜绝「假成功」）。已 Node 实证 UTF-8 文件名正确、压缩包非空", "新增「执行中，请稍后」全屏遮罩（busy）：导出照片时显式提示，避免等候误以为卡死", "菜单/抽屉/弹窗面板色（--panel）再调浅一档（#1d4a7a→#2a6098），缓解「菜单背景偏深」；筛选弹窗新增「当前查询关键词」提示区", "筛选实时计数、蓝色虚线圆圈圈选、单/多/无结果跳转、查询/筛选置顶、退出按钮/三击主菜单、智能匹配确认等既有能力保持不变"]],
+    ["v1.9.5", "2026-08-16", ["照片压缩包崩溃根因彻底修复：崩溃不是「照片太大」，而是①主线程同步解压数 GB 压缩包阻塞 UI ②全分辨率图 base64 撑爆 WebView OOM ③临时目录从不清理。改为原生线程池异步解压 + 流式写盘 + 原生缩略图（RGB_565 ≤720px JPEG q72）+ 内容哈希，JS 仅收齐轻量元数据再匹配；全图仅在灯箱/保存/导出时按需单张加载", "新增原生持久化（persistImage）与按需加载（loadFullImage）桥接：导入完成自动把全图从临时目录迁入 app 私有 photos 目录，清理缓存不会误删已绑定照片", "新增「清理导入缓存」菜单：在导入完成 / App 启动 / 菜单手动三处调用，删除 inbox/uz_* 临时目录，杜绝残留累积", "导入匹配分块（每批 30 张 + 让出主线程）+ 弹窗照片封顶 18 张，超大批量不再卡死", "筛选实时计数、查询/筛选置顶、退出按钮/三击主菜单、智能匹配确认等既有能力保持不变"]],
+    ["v1.9.4", "2026-08-16", ["照片压缩包导入防崩：新增体积预检（>1.2GB 直接拒绝并引导分卷；>300MB 二次确认），改为流式解压（逐张释放内存）+ 进度提示 + 让出主线程，彻底解决 1.7G 压缩包导致 APP 崩溃/死机", "修复 Leaflet 版权署名外链（https://leafletjs.com）在离线/弱网下点击超时的报错：去掉地图外部署名链接，仅保留本地资源", "筛选实时计数升级：提示区同时显示命中「监控点数 + 照片张数」，随条件变化实时刷新", "既有功能与菜单（查询/筛选置顶、单选改名、版本变更、删除照片/监控点等）保持不变，仅智能优化"]],
+    ["v1.9.3", "2026-08-16", ["照片导入绑定修复：杜绝“手动匹配照片未绑上”的静默丢失——无名称匹配的照片也进入人工选择", "人工选择改为单选（每张照片只属一个监控点），默认勾选最可能对，可改或跳过", "确认后照片 caption 统一改为「监控点名+照片+序号」，监控点稳定读到", "新增「版本变更」菜单；「关于」版本号改用全局单一来源，避免漂移", "新增「删除照片 / 删除监控点」按机构/时间条件批量删除（删除前提示不可恢复）", "筛选新增「照片」维度：有照片 / 无照片 / 至少 N 张"]],
+    ["v1.9.2", "2026-08-15", ["批量导入弹窗来源图标方块化醒目", "修复 zip 压缩包导入兜底错接（mode=zip 真正调用 webkitZipPhotos）"]],
+    ["v1.9.1", "2026-08-15", ["菜单图标方块化醒目 + 筛选图标与查询区分(🎛️)", "筛选实时命中计数 + 蓝色虚线圆圈圈出全部命中并居中", "批量导入支持 zip/7z + 百度/夸克网盘", "导出照片 zip/7z 按机构命名 + 本地/网盘/分享微信·飞书·QQ"]],
+    ["v1.9.0", "2026-08-14", ["菜单折叠分组 + 智能模糊匹配（错字/多字/漏字/部分词）+ 文件夹上下文", "查询/筛选置顶；筛选 0→提示、1→飞到、多→圈出居中", "照片大图浏览/删除/顺序调整"]],
+    ["v1.8.0", "2026-08-12", ["照片匹配优化（文件名↔监控点名智能对应）"]]
+  ];
+  function changelog() {
+    const html = CHANGELOG.map(([v, d, items]) => `<div class="cl-block">
+      <div class="cl-ver">${esc(v)} <span class="cl-date">${esc(d)}</span></div>
+      <ul class="cl-list">${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+    </div>`).join("");
+    openModal("版本变更（" + APP_VER + "）", `<div class="filelist" style="max-height:60vh;overflow:auto">${html}</div>`, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+  }
+  // 条件选择弹窗（机构 / 时间 + 列表勾选 + 全选/取消/确认），供删除照片、删除监控点复用
+  function conditionPicker(cfg) {
+    const html = `<div class="hint">${cfg.hint}</div>
+      <div class="field"><label>按机构（可多选，不选 = 全部）</label><div class="chips" id="cpOff">${DIMS.offices.map((o) => `<span class="chip" data-off="${esc(o)}">${esc(o)}</span>`).join("") || '<span class="hint">无机构</span>'}</div></div>
+      <div class="field"><label>按时间（导入/修改日期，留空 = 不限）</label><div style="display:flex;gap:8px"><input type="date" id="cpFrom" style="flex:1"><span style="align-self:center">至</span><input type="date" id="cpTo" style="flex:1"></div></div>
+      <div class="field"><label>待处理项（勾选后删除）</label><div class="filelist" id="cpList" style="max-height:42vh;overflow:auto"></div></div>
+      <div class="hint" id="cpCount" style="margin-top:4px">已选 0 项</div>`;
+    openModal(cfg.title, html, `<button class="btn ghost" id="cpAll">全选</button><button class="btn ghost" id="cpClear">取消选择</button><button class="btn ghost" id="cpExit">退出</button><button class="btn ${cfg.danger ? "danger" : "primary"}" id="cpOk">${cfg.confirmLabel || "确认"}</button>`);
+    const body = el("modalBody");
+    const matchSet = new Set(), selSet = new Set();
+    const cntText = () => "已选 " + [...selSet].filter((id) => matchSet.has(id)).length + " 项";
+    const refresh = () => {
+      const offs = [...body.querySelectorAll("#cpOff .chip.on")].map((c) => c.dataset.off);
+      const from = el("cpFrom").value, to = el("cpTo").value;
+      const fromT = from ? new Date(from + "T00:00:00").getTime() : null;
+      const toT = to ? new Date(to + "T23:59:59").getTime() : null;
+      matchSet.clear();
+      const list = body.querySelector("#cpList"); list.innerHTML = "";
+      const rows = cfg.items.filter((it) => {
+        if (offs.length && !offs.includes(it.office)) return false;
+        if (fromT != null || toT != null) {
+          const t = it.ts ? new Date(it.ts).getTime() : NaN;
+          if (isNaN(t)) return false; // 开启了时间条件但记录无时间，则排除
+          if (fromT != null && t < fromT) return false;
+          if (toT != null && t > toT) return false;
+        }
+        return true;
+      });
+      if (!rows.length) { list.innerHTML = `<div class="hint">当前条件下没有可处理项。</div>`; el("cpCount").textContent = cntText(); return; }
+      rows.forEach((it) => {
+        matchSet.add(it.id);
+        const checked = selSet.has(it.id) ? "checked" : "";
+        const div = document.createElement("label");
+        div.className = "ex-item";
+        div.innerHTML = `<input type="checkbox" class="cp-cb" data-id="${esc(it.id)}" ${checked}><span>${esc(it.label)}${it.sub ? ` <em class="sc">${esc(it.sub)}</em>` : ""}</span>`;
+        list.appendChild(div);
+      });
+      body.querySelectorAll(".cp-cb").forEach((cb) => cb.onchange = () => {
+        if (cb.checked) selSet.add(cb.dataset.id); else selSet.delete(cb.dataset.id);
+        el("cpCount").textContent = cntText();
+      });
+      el("cpCount").textContent = cntText();
+    };
+    body.querySelectorAll("#cpOff .chip").forEach((c) => c.onclick = () => { c.classList.toggle("on"); refresh(); });
+    el("cpFrom").onchange = refresh; el("cpTo").onchange = refresh;
+    el("cpAll").onclick = () => { body.querySelectorAll(".cp-cb").forEach((cb) => { cb.checked = true; selSet.add(cb.dataset.id); }); el("cpCount").textContent = cntText(); };
+    el("cpClear").onclick = () => { body.querySelectorAll(".cp-cb").forEach((cb) => { cb.checked = false; }); selSet.clear(); el("cpCount").textContent = "已选 0 项"; };
+    el("cpExit").onclick = closeModal;
+    el("cpOk").onclick = () => {
+      const ids = [...selSet].filter((id) => matchSet.has(id));
+      if (!ids.length) { toast("请先勾选要处理的项目"); return; }
+      closeModal(); cfg.onConfirm(ids);
+    };
+    refresh();
+  }
+  // 删除照片：按机构/时间筛选，勾选后从对应监控点移除
+  function delPhotos() {
+    const items = [];
+    records.forEach((r) => (r.photos || []).forEach((p, i) => {
+      items.push({ id: r.id + "::" + i, label: (r.name || "监控点") + " · " + (p.caption || ("照片" + (i + 1))), sub: r.office || "", office: r.office || "", ts: r.ts });
+    }));
+    if (!items.length) { toast("当前没有照片可删除"); return; }
+    conditionPicker({
+      title: "删除照片",
+      hint: "按机构 / 时间筛选后，勾选要删除的照片（可全选/取消），确认即从对应监控点移除。",
+      items, confirmLabel: "删除选中照片", danger: true,
+      onConfirm: async (ids) => {
+        const idxMap = {};
+        ids.forEach((id) => { const [rid, pi] = id.split("::"); (idxMap[rid] = idxMap[rid] || new Set()).add(parseInt(pi, 10)); });
+        await Store.patch((d) => {
+          d.added = d.added || []; d.updated = d.updated || {};
+          for (const rid in idxMap) {
+            const exist = d.added.find((a) => a.id === rid);
+            const upd = d.updated[rid];
+            const base = records.find((x) => x.id === rid) || {};
+            const cur = (exist || upd || base).photos || [];
+            const kept = cur.filter((_, i) => !idxMap[rid].has(i));
+            if (exist) { const i = d.added.findIndex((a) => a.id === rid); d.added[i] = Object.assign({}, d.added[i], { photos: kept }); }
+            else d.updated[rid] = Object.assign({}, base, upd || {}, { photos: kept });
+          }
+        });
+        DELTA = await Store.get(); merge(); render();
+        toast("已删除 " + ids.length + " 张照片");
+      }
+    });
+  }
+  // 删除监控点：按机构/时间筛选，勾选后永久删除（删除前提示不可恢复）
+  function delBuildings() {
+    const items = records.map((r) => ({ id: r.id, label: r.name || "(无名)", sub: r.office || "", office: r.office || "", ts: r.ts }));
+    if (!items.length) { toast("当前没有监控点可删除"); return; }
+    conditionPicker({
+      title: "删除监控点",
+      hint: "按机构 / 时间筛选后，勾选要删除的监控点（可全选/取消），确认后将从本机永久删除。",
+      items, confirmLabel: "删除选中监控点", danger: true,
+      onConfirm: (ids) => {
+        const n = ids.length;
+        openModal("确认删除", `<div class="hint" style="color:var(--danger)">⚠️ 即将删除 <b>${n}</b> 个监控点，删除后数据<b>不可恢复</b>。确定继续吗？</div>`,
+          `<button class="btn ghost" id="dbCancel">再想想</button><button class="btn danger" id="dbOk">确认删除（不可恢复）</button>`);
+        el("dbCancel").onclick = closeModal;
+        el("dbOk").onclick = async () => {
+          closeModal();
+          await Store.patch((d) => {
+            d.added = d.added || []; d.updated = d.updated || {};
+            for (const id of ids) {
+              const i = d.added.findIndex((a) => a.id === id);
+              if (i >= 0) d.added.splice(i, 1);
+              else { d.deleted = d.deleted || []; if (!d.deleted.includes(id)) d.deleted.push(id); delete d.updated[id]; }
+            }
+          });
+          DELTA = await Store.get(); merge(); render();
+          toast("已删除 " + n + " 个监控点");
+        };
+      }
+    });
+  }
+  // 四端功能对照单（数据在 platform_matrix.js：PLAT_FEATURES / PLAT_DIFF，由 gen_feature_matrix.py 生成）
+  // 注意：必须定义在 IIFE 内才能访问局部 openModal/esc；早期版本全局定义导致点击时 ReferenceError（空白）
+  function platMatrix() {
+    const SYM = { full: "✅", partial: "⚠️", none: "❌" };
+    const COLS = [["android", "安卓 APK"], ["ios", "苹果 PWA"], ["uos", "统信 UOS"], ["win", "Win11"]];
+    const FEATURES = (typeof PLAT_FEATURES !== "undefined") ? PLAT_FEATURES : [];
+    const DIFF = (typeof PLAT_DIFF !== "undefined") ? PLAT_DIFF : [];
+    if (!FEATURES.length) return toast("四端功能对照单数据未加载（platform_matrix.js 缺失）");
+    let html = '<div class="hint">✅ 完整　⚠️ 受限(接入方式不同)　❌ 无</div>';
+    html += '<div style="max-height:56vh;overflow:auto;margin-top:6px">';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+    html += '<thead><tr style="position:sticky;top:0;background:var(--panel2,#2a6098);color:#fff">'
+      + '<th style="padding:6px 4px;text-align:left">功能</th>'
+      + COLS.map((c) => '<th style="padding:6px 4px">' + c[1] + '</th>').join("") + '</tr></thead><tbody>';
+    let curGroup = "";
+    for (const r of FEATURES) {
+      if (r.g !== curGroup) { curGroup = r.g; html += '<tr><td colspan="5" style="padding:6px 4px;background:var(--accent,#1d4a7a);color:#fff;font-weight:700">' + esc(curGroup) + '</td></tr>'; }
+      html += '<tr style="border-bottom:1px solid var(--line)">';
+      html += '<td style="padding:5px 4px;vertical-align:top"><div>' + esc(r.f) + '</div>'
+        + (r.note ? '<div style="color:var(--muted);font-size:11px;margin-top:2px">' + esc(r.note) + '</div>' : '') + '</td>';
+      for (const c of COLS) html += '<td style="padding:5px 4px;text-align:center">' + (SYM[r[c[0]]] || "—") + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    html += '<div class="env-title" style="margin-top:12px">各版本四端功能差异</div>';
+    html += '<div class="filelist" style="max-height:30vh;overflow:auto">';
+    for (const e of DIFF) {
+      html += '<div class="cl-block"><div class="cl-ver">' + esc(e.v) + ' <span class="cl-date">' + esc(e.d) + '</span></div>'
+        + '<ul class="cl-list">' + e.items.map((t) => '<li>' + esc(t) + '</li>').join("") + '</ul></div>';
+    }
+    html += '</div>';
+    openModal("四端功能对照单（" + APP_VER + "）", html, '<button class="btn ghost" onclick="APP.close()">关闭</button>');
+  }
+  function about() {
+    const env = getEnvInfo();
+    const row = (k, v) => `<div class="env-row"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`;
+    // 建议使用环境：用户运行本应用所推荐的环境（静态指导）
+    const rec = [
+      ["操作系统", "安卓 8.0+ / iOS 14+ / Windows 10·11 / macOS"],
+      ["浏览器", "Chrome / Edge / Safari 最新版（桌面与手机均可）"],
+      ["网络", "底图与在线功能需联网；离线可浏览已载入数据"],
+      ["权限", "建议授予「定位」与「文件/存储」权限（导出/导入、定位所需）"],
+      ["屏幕", "建议 ≥ 5 英寸；竖屏/横屏自适应"]
+    ];
+    const html = `<div style="text-align:center;padding:6px 4px 10px">
+      <div style="font-size:46px">📐</div>
+      <h3 style="margin:8px 0">视频设备运维一张图</h3>
+      <p class="hint">奥维采集数据 → 天地图一张图<br>支持浏览 / 筛选 / 增删改 / 多照片 / ovkmz 导入导出</p>
+      <p style="margin-top:14px;color:var(--accent);font-weight:700">制作：科技推广中心</p>
+      <p class="hint" style="margin-top:4px">版本 ${APP_VER}</p>
+    </div>
+    <div class="env-box">
+      <div class="env-title">建议使用环境</div>
+      ${rec.map(([k, v]) => row(k, v)).join("")}
+    </div>
+    <div class="env-box">
+      <div class="env-title">制作环境（本机运行环境）</div>
+      ${row("操作系统", env.os + (env.osVer ? " " + env.osVer : ""))}
+      ${row("设备型号", env.device)}
+      ${row("运行环境", env.engine)}
+      ${row("CPU", env.cpu)}
+      ${row("内存", env.mem)}
+      ${row("GPU", env.gpu)}
+      ${row("屏幕", env.screen)}
+    </div>`;
+    openModal("关于", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+  }
+
+  // ---------- 获取经纬度（我的位置 / 地图点选 / 搜索）----------
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).catch(() => fallbackCopy(t));
+    } else fallbackCopy(t);
+  }
+  function fallbackCopy(t) {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  function getCoord() {
+    const html = `
+      <div class="field"><label>经纬度（WGS84 十进制）</label>
+        <div class="coord-display">
+          <div class="cd-row"><span class="cd-k">纬度 Lat</span><span class="cd-v" id="cdLat">—</span></div>
+          <div class="cd-row"><span class="cd-k">经度 Lng</span><span class="cd-v" id="cdLon">—</span></div>
+        </div>
+      </div>
+      <div class="coord-actions">
+        <button class="btn ghost" id="cdMe">📍 我的位置</button>
+        <button class="btn ghost" id="cdPick">🗺 地图点选</button>
+        <button class="btn ghost" id="cdCopy">📋 复制</button>
+      </div>
+      <div class="field" style="margin-top:14px"><label>搜索监控点获取其坐标</label>
+        <input id="cdSearch" placeholder="输入名称…" autocomplete="off">
+        <div class="cd-results" id="cdResults"></div>
+      </div>
+      <div class="hint">我的位置需授权定位；地图点选请关闭本弹窗后在地图上点击；复制格式为「纬度, 经度」。</div>`;
+    openModal("获取经纬度", html, `<button class="btn ghost" onclick="APP.close()">关闭</button>`);
+    const cur = coordResult ? { lat: coordResult.lat, lon: coordResult.lon } : { lat: null, lon: null };
+    coordResult = null;
+    const setDisp = () => {
+      el("cdLat").textContent = cur.lat != null ? cur.lat.toFixed(6) : "—";
+      el("cdLon").textContent = cur.lon != null ? cur.lon.toFixed(6) : "—";
+    };
+    setDisp();
+    el("cdMe").onclick = () => {
+      if (!navigator.geolocation) return toast("当前环境不支持定位");
+      toast("正在定位…");
+      navigator.geolocation.getCurrentPosition((p) => {
+        cur.lat = p.coords.latitude; cur.lon = p.coords.longitude; setDisp();
+        if (myLocMarker) map.removeLayer(myLocMarker);
+        myLocMarker = L.circleMarker([cur.lat, cur.lon], { radius: 9, color: "#2ecc8f", fillColor: "#2ecc8f", fillOpacity: .65, weight: 3 }).addTo(map).bindPopup("我的位置").openPopup();
+        map.setView([cur.lat, cur.lon], 15);
+        toast("已获取我的位置坐标");
+      }, (err) => {
+        if (window.AndroidBridge && window.AndroidBridge.openLocationSettings) window.AndroidBridge.openLocationSettings();
+        else toast("定位失败，请检查定位权限");
+      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+    };
+    el("cdPick").onclick = () => {
+      closeModal(); pickForCoord = true; togglePick(true);
+      toast("请在地图上点选位置（再次点此取消）");
+    };
+    el("cdCopy").onclick = () => {
+      if (cur.lat == null) return toast("请先获取坐标");
+      const t = `${cur.lat.toFixed(6)}, ${cur.lon.toFixed(6)}`;
+      copyText(t); toast("已复制：" + t);
+    };
+    el("cdSearch").addEventListener("input", (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      const box = el("cdResults");
+      if (!q) { box.innerHTML = ""; return; }
+      // v2.5.0：搜索范围含两层对象（设备 + 水工建筑物），与「对象类别」口径一致
+      const rs = shownRecordsDefault().filter((r) => `${r.name}${r.office || ""}${r.station || ""}${r.btype || ""}`.toLowerCase().includes(q)).slice(0, 30);
+      box.innerHTML = rs.map((r) =>
+        `<div class="cd-item" data-id="${r.id}"><span>${esc(r.name)}</span><span class="cd-xy">${(+r.lat).toFixed(5)} , ${(+r.lon).toFixed(5)}</span></div>`).join("");
+      box.querySelectorAll(".cd-item").forEach((it) => it.onclick = () => {
+        const rr = findRec(it.dataset.id); if (!rr) return;
+        cur.lat = +rr.lat; cur.lon = +rr.lon; setDisp();
+        map.flyTo([cur.lat, cur.lon], Math.max(map.getZoom(), 15), { duration: 0.6 });
+        toast("已定位：" + rr.name);
+      });
+    });
+  }
+
+  // ---------- 照片大图（长按保存 + 多图切换，item ⑧）----------
+  let lbRid = null, lbPi = 0;
+  // 按需加载照片：有全图磁盘路径则原生单张加载全图，否则回退到 dataUrl（旧数据/Web）
+  function loadPhotoFull(ph) {
+    return new Promise((resolve) => {
+      if (ph && ph.fullPath && window.AndroidBridge && window.AndroidBridge.loadFullImage) {
+        try { const full = window.AndroidBridge.loadFullImage(ph.fullPath); if (full && full.startsWith("data:")) return resolve(full); } catch (e) {}
+      }
+      // v2.4.9：兜底链 full → dataUrl → thumb；三者皆空时明确提示 + 入错误日志，不再白屏
+      const src = (ph && (ph.full || ph.dataUrl || ph.thumb)) || "";
+      if (!src) {
+        try { if (window.__ERR_LOG_PUSH__) window.__ERR_LOG_PUSH__("照片数据缺失（无可用图像源）：" + JSON.stringify({ cap: ph && ph.caption, keys: ph ? Object.keys(ph) : [] })); } catch (e) {}
+        try { if (typeof toast === "function") toast("该照片数据缺失（原始图像未随文件导入）"); } catch (e) {}
+      }
+      resolve(src);
+    });
+  }
+  async function openPhoto(rid, pi) {
+    // v2.5.0：改用 findRec —— 建筑物层的照片也要能预览（需求五），原来只在设备层找会「点了没反应」
+    const r = findRec(rid); if (!r || !r.photos[pi]) return;
+    lbRid = rid; lbPi = pi;
+    const ph = r.photos[pi];
+    el("lbImg").src = await loadPhotoFull(ph);
+    el("lbImg").style.transform = ""; // 复位上一张的放大状态
+    el("lbCap").textContent = ph.caption || "";
+    el("lightbox").classList.add("show");
+    // 控制条（保存 / 切换）默认隐藏，长按图片后弹出
+    el("lbBar").style.display = "none";
+    el("lbPrev").style.display = "none";
+    el("lbNext").style.display = "none";
+    el("lbIdx").style.display = "none";
+  }
+  async function switchPhoto(d) {
+    const r = findRec(lbRid); if (!r) return;
+    const n = (r.photos || []).length; if (n < 2) return;
+    lbPi = (lbPi + d + n) % n;
+    const ph = r.photos[lbPi];
+    el("lbImg").src = await loadPhotoFull(ph);
+    el("lbImg").style.transform = ""; // 复位放大状态
+    el("lbCap").textContent = ph.caption || "";
+    el("lbIdx").textContent = (lbPi + 1) + " / " + n;
+  }
+  async function saveCurrentPhoto() {
+    const r = findRec(lbRid); if (!r) return;
+    const ph = r.photos[lbPi]; if (!ph) return;
+    const src = await loadPhotoFull(ph);
+    if (!src) return;
+    const ext = (src.split(";")[0].split("/")[1] || "png").replace("+xml", "");
+    const a = document.createElement("a");
+    a.href = src;
+    a.download = (ph.caption || r.name || "photo") + "." + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("已保存图片到下载目录");
+  }
+  function bindLightbox() {
+    const img = el("lbImg");
+    let lpTimer = null;
+    // ---------- 放大：双击/双指 + 拖拽平移 ----------
+    let scale = 1, tx = 0, ty = 0;
+    const applyT = () => { img.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; img.style.transition = scale === 1 ? "transform .2s" : "none"; el("lbZoom").textContent = scale > 1 ? "还原" : "放大"; };
+    const resetT = () => { scale = 1; tx = 0; ty = 0; applyT(); };
+    const clampT = () => { const max = (scale - 1) * 220; tx = Math.max(-max, Math.min(max, tx)); ty = Math.max(-max, Math.min(max, ty)); };
+    const toggleZoom = (cx, cy) => {
+      if (scale > 1) { resetT(); return; }
+      scale = 2.2; tx = 0; ty = 0; applyT();
+    };
+    let lastTouch = 0, startX = 0, startY = 0, pinned = false, pinch0 = 0, scale0 = 1;
+    img.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 2) {
+        pinned = true; pinch0 = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); scale0 = scale;
+      } else if (e.touches.length === 1) {
+        lastTouch = Date.now(); startX = e.touches[0].clientX - tx; startY = e.touches[0].clientY - ty;
+      }
+    }, { passive: true });
+    img.addEventListener("touchmove", (e) => {
+      if (e.touches.length === 2 && pinned) {
+        const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        scale = Math.max(1, Math.min(5, scale0 * (d / (pinch0 || d)))); clampT(); applyT();
+      } else if (e.touches.length === 1 && scale > 1) {
+        tx = e.touches[0].clientX - startX; ty = e.touches[0].clientY - startY; clampT(); applyT();
+      }
+    }, { passive: true });
+    img.addEventListener("touchend", (e) => {
+      if (e.changedTouches.length === 1) {
+        const dt = Date.now() - lastTouch;
+        if (dt < 300 && !pinned) { const t = e.changedTouches[0]; toggleZoom(t.clientX, t.clientY); }
+      }
+      if (e.touches.length < 2) pinned = false;
+    });
+    img.addEventListener("dblclick", (e) => { e.preventDefault(); toggleZoom(e.clientX, e.clientY); });
+    el("lbZoom").onclick = () => toggleZoom();
+    // 长按弹出控制条（保存/分享/切换）
+    const startLP = () => { clearTimeout(lpTimer); lpTimer = setTimeout(() => {
+      el("lbBar").style.display = "flex";
+      const r = findRec(lbRid);
+      if (r && (r.photos || []).length > 1) {
+        el("lbPrev").style.display = "flex"; el("lbNext").style.display = "flex"; el("lbIdx").style.display = "block";
+        el("lbIdx").textContent = (lbPi + 1) + " / " + r.photos.length;
+      }
+    }, 500); };
+    const cancelLP = () => { clearTimeout(lpTimer); };
+    img.addEventListener("mousedown", startLP);
+    img.addEventListener("mouseup", cancelLP);
+    img.addEventListener("mouseleave", cancelLP);
+    // ---------- v2.4.9-D 电脑端：鼠标拖拽平移 + 滚轮缩放（与手机端手势并存）----------
+    let mDown = false, mMoved = false, mSX = 0, mSY = 0, mTX = 0, mTY = 0;
+    img.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      mDown = true; mMoved = false; mSX = e.clientX; mSY = e.clientY; mTX = tx; mTY = ty;
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!mDown) return;
+      const dx = e.clientX - mSX, dy = e.clientY - mSY;
+      if (!mMoved && Math.abs(dx) + Math.abs(dy) > 4) { mMoved = true; cancelLP(); img.style.cursor = "grabbing"; }
+      if (mMoved && scale > 1) { tx = mTX + dx; ty = mTY + dy; clampT(); applyT(); }
+    });
+    document.addEventListener("mouseup", () => {
+      if (!mDown) return;
+      mDown = false; img.style.cursor = scale > 1 ? "grab" : "zoom-in";
+    });
+    img.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const step = e.deltaY < 0 ? 0.25 : -0.25;
+      scale = Math.max(1, Math.min(5, scale + step));
+      if (scale === 1) { tx = 0; ty = 0; } else { clampT(); }
+      applyT();
+    }, { passive: false });
+    img.style.cursor = "zoom-in";
+
+    function onKeyLb(e) {
+      if (!el("lightbox").classList.contains("show")) return;
+      if (e.key === "+" || e.key === "=") { scale = Math.min(5, scale + 0.25); applyT(); }
+      else if (e.key === "-" || e.key === "_") { scale = Math.max(1, scale - 0.25); if (scale === 1) { tx = 0; ty = 0; } applyT(); }
+      else if (e.key === "ArrowLeft") switchPhoto(-1);
+      else if (e.key === "ArrowRight") switchPhoto(1);
+      else if (e.key === "0") resetT();
+    }
+    if (!window.__lbKeyBound) { window.__lbKeyBound = 1; document.addEventListener("keydown", onKeyLb); }
+    // ---------- /v2.4.9-D ----------
+    el("lbPrev").onclick = () => switchPhoto(-1);
+    el("lbNext").onclick = () => switchPhoto(1);
+    el("lbSave").onclick = saveCurrentPhoto;
+    el("lbShare").onclick = () => { const r = lbRid; if (r) shareBuilding(r); };
+    el("lbClose").onclick = () => { el("lightbox").classList.remove("show"); resetT(); };
+  }
+
+  // ---------- 事件绑定 ----------
+  function bindUI() {
+    // 版本变更菜单副标题随全局版本号同步（避免硬编码漂移）
+    if (el("changelogSub")) el("changelogSub").textContent = "v1.8.0 → " + APP_VER;
+    el("btnMenu").onclick = () => { el("drawer").classList.add("open"); el("mask").classList.add("show"); applyHiddenMenus(); applyHiddenMenus(); };
+    el("btnExit").onclick = () => {
+      const closed = APP.back();
+      if (!closed) { toast("已是最外层页面 · 三击地图空白处可唤起主菜单"); }
+    };
+
+    el("fabMenu").onclick = () => { el("drawer").classList.add("open"); el("mask").classList.add("show"); applyHiddenMenus(); applyHiddenMenus(); };
+    el("drawerClose").onclick = closeDrawer; el("mask").onclick = closeDrawer;
+    el("listClose").onclick = () => el("listbar").classList.remove("open");
+    el("btnList").onclick = () => el("listbar").classList.toggle("open");
+    el("btnBase").onclick = () => openBasemap();
+    el("btnLayer").onclick = () => openBasemap();
+    el("btnFilter").onclick = openFilter; // 顶栏筛选按钮（与查询并列置顶）
+    // v2.0 收藏窗口/返回收藏（item 7）：右侧悬浮控件组（收藏当前窗口 ⭐ / 返回收藏窗口 📍）
+    if (el("mcFav")) el("mcFav").onclick = saveFavWindow;
+    if (el("mcFavGo")) el("mcFavGo").onclick = goFavWindow;
+    el("modalClose").onclick = closeModal;
+    el("modalMask").onclick = closeModal;
+    el("fbClear").onclick = clearFilter; // 筛选状态条：一键清除
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") back(); });
+    el("lbClose").onclick = () => { el("lightbox").classList.remove("show"); el("lbImg").style.transform = ""; };
+    el("lightbox").onclick = (e) => { if (e.target.id === "lightbox") { el("lightbox").classList.remove("show"); el("lbImg").style.transform = ""; } };
+    $("#search").addEventListener("input", (e) => { filter.q = e.target.value; render(); });
+    el("measureClear").onclick = () => {
+      measurePts = [];
+      if (measureLine) measureLine.setLatLngs([]);
+      overlayGroup.eachLayer((l) => { if (l._mpt) overlayGroup.removeLayer(l); });
+      el("measureInfo").textContent = "点击地图或监控点添加测量点";
+    };
+    el("measureExit").onclick = exitMeasure;
+    // 折叠分组：点分组标题或"＋"展开/收起二级菜单（默认隐藏）
+    document.querySelectorAll(".mgroup.collapsible").forEach((g) => {
+      g.onclick = () => {
+        const sub = g.nextElementSibling;
+        if (sub && sub.classList.contains("msub")) {
+          const open = sub.classList.toggle("open");
+          g.classList.toggle("open", open);
+          g.querySelector(".tg").textContent = open ? "－" : "＋";
+        }
+      };
+    });
+    document.querySelectorAll(".menu-btn").forEach(bindMenuBtn); // v2.4：绑定提取为独立函数（快捷常用动态按钮复用）
+    renderQuickFavs(); // v2.4：渲染快捷常用
+    applyHiddenMenus(); // v2.4.8：应用菜单隐藏设置
+    // v2.0 收藏当前地图「窗口」（视图四角范围 + 缩放）/ 返回收藏窗口
+    // Store.ui.favs = [{id,name,bounds:[[swLat,swLng],[neLat,neLng]],center:[lat,lng],zoom}]
+    function getFavs() { const s = Store.ui.get() || {}; return Array.isArray(s.favs) ? s.favs : []; }
+    function setFavs(favs) { const s = Store.ui.get() || {}; Store.ui.set(Object.assign({}, s, { favs })); }
+    function flyToFav(f) {
+      if (f && f.bounds && f.bounds.length === 2 && f.bounds[0] && f.bounds[1]) {
+        try { map.flyToBounds([[f.bounds[0][0], f.bounds[0][1]], [f.bounds[1][0], f.bounds[1][1]]], { duration: 0.6, maxZoom: f.zoom }); return; } catch (e) {}
+      }
+      if (f && f.center) map.flyTo([f.center[0], f.center[1]], f.zoom || 15, { duration: 0.6 });
+    }
+    function saveFavWindow() {
+      const b = map.getBounds();
+      const bounds = [[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]];
+      const center = [map.getCenter().lat, map.getCenter().lng];
+      const zoom = map.getZoom();
+      const favs = getFavs();
+      const def = "窗口" + (favs.length + 1);
+      openModal("收藏当前窗口",
+        `<div class="hint">将收藏当前地图视图范围（四角坐标 + 缩放），可随时返回，便于快速回到关注区域（如「某机构监控点窗口」）。</div>
+         <div class="field"><label>窗口名称</label><input id="favName" class="inp" value="${esc(def)}" placeholder="如：某机构监控点窗口"></div>`,
+        `<button class="btn ghost" id="favCancel">取消</button><button class="btn primary" id="favOk">收藏</button>`);
+      el("favCancel").onclick = closeModal;
+      el("favOk").onclick = () => {
+        const name = (el("favName").value || def).trim() || def;
+        const entry = { id: "w" + Date.now().toString(36), name, bounds, center, zoom };
+        setFavs(favs.concat([entry]));
+        closeModal();
+        toast("已收藏窗口：" + name + "（点 📍 返回）");
+      };
+    }
+    function goFavWindow() {
+      const favs = getFavs();
+      if (!favs.length) {
+        const s = Store.ui.get() || {};
+        if (s.fav && s.fav.lat != null) { return flyToFav({ center: [s.fav.lat, s.fav.lng], zoom: s.fav.zoom }); } // 兼容旧版单点收藏
+        return toast("尚未收藏窗口，请先点 ⭐ 收藏当前窗口");
+      }
+      if (favs.length === 1) { flyToFav(favs[0]); return toast("已返回收藏窗口：" + favs[0].name); }
+      const html = favs.map((f, i) => `<div class="fav-item" data-i="${i}"><span class="fi-ico">🪟</span><span class="fi-name">${esc(f.name)}</span><span class="fi-meta">缩放 ${f.zoom}</span></div>`).join("");
+      openModal("返回收藏窗口", `<div class="hint">选择一个窗口返回（按记录范围 + 缩放居中）：</div><div class="filelist">${html}</div>`, `<button class="btn ghost" id="favClose">关闭</button>`);
+      el("favClose").onclick = closeModal;
+      document.querySelectorAll(".fav-item").forEach((it) => {
+        it.onclick = () => { const i = +it.dataset.i; closeModal(); flyToFav(favs[i]); toast("已返回收藏窗口：" + favs[i].name); };
+      });
+    }
+    // 三击地图任意处 → 强制恢复主菜单（测距/选点模式不触发，避免误操）
+    $("#map").addEventListener("click", () => {
+      if (measureMode || pickMode) return;
+      const now = Date.now();
+      if (now - _tapT > 600) _taps = 0;
+      _taps++; _tapT = now;
+      if (_taps >= 3) { _taps = 0; tripleTapMenu(); }
+    });
+    bindLightbox();
+  }
+  // 查询置顶：聚焦顶栏搜索框并提示
+  // ---------- 菜单按钮统一绑定（v2.4 提取：静态菜单 + 快捷常用动态按钮共用）----------
+  function bindMenuBtn(b) {
+    b.onclick = () => {
+      const act = b.dataset.act; closeDrawer();
+      // 大模型 AI 领域配置（感知：内部视频设备运维台账，大模型上无公开数据）
+      AI.domain = {
+        appName: "视频设备运维一张图",
+        internal: true,
+        recName: (r) => r.name || "(未命名)",
+        recMeta: (r) => [r.office, r.station, r.btype].filter(Boolean).join(" / "),
+        recSearch: (r) => [r.name, r.type, r.office, r.station, r.btype].filter(Boolean).join(" "),
+        // #7 智能问询：注入机构层级与统计，让大模型能回答"某管理处有几个管理所"等 org 级问题（即使无独立条目也可由分组得出）
+        orgContext: (q) => {
+          // v2.5.0 双数据层：机构统计分两层给出（用户口径：设备=感知设备，建筑物=水工建筑物），
+          // 并注入本地空间关系统计（需求四-a：某对象周边有几个感知设备 / 几个水工建筑物）
+          const byMgmt = {};
+          records.forEach((r) => {
+            const mg = orgVal(r, "mgmt") || "(未分配管理处)";
+            const o = normOffice(orgVal(r, "office")) || "(未分配管理所)";
+            const b = byMgmt[mg] || (byMgmt[mg] = { offices: {}, stations: new Set(), bt: {}, count: 0 });
+            b.offices[o] = (b.offices[o] || 0) + 1;
+            if (r.station) b.stations.add(r.station);
+            if (r.btype) b.bt[r.btype] = (b.bt[r.btype] || 0) + 1;
+            b.count++;
+          });
+          const lines = Object.keys(byMgmt).sort().map((mg) => {
+            const b = byMgmt[mg];
+            const offs = Object.keys(b.offices).sort();
+            return `· ${mg}：共 ${b.count} 个感知设备，涉及 ${offs.length} 个机构（${offs.join("、")}），库渠 ${b.stations.size} 个。`;
+          });
+          const byOfficeB = {};
+          recordsBld.forEach((r) => {
+            const o = normOffice(orgVal(r, "office")) || "(未填管理所)";
+            byOfficeB[o] = (byOfficeB[o] || 0) + 1;
+          });
+          const bldLines = Object.keys(byOfficeB).sort().map((o) => `· ${o}：${byOfficeB[o]} 个水工建筑物`);
+          const btBld = {};
+          recordsBld.forEach((r) => { if (r.kind !== "place") btBld[r.btype] = (btBld[r.btype] || 0) + 1; });
+          const btTxt = Object.keys(btBld).sort((a, b) => btBld[b] - btBld[a]).slice(0, 12).map((k) => `${k} ${btBld[k]}`).join("、");
+          let out = `【本地台账机构层级与统计】\n`
+            + `感知设备总数：${records.length} 个。\n` + (lines.join("\n") || "（暂无数据）")
+            + `\n\n水工建筑物总数：${recordsBld.length} 个（独立数据层，与感知设备互不影响）。\n`
+            + (bldLines.join("\n") || "（暂无数据）")
+            + (btTxt ? `\n建筑物类型分布：${btTxt}。` : "")
+            + `\n\n两层数据的关系：水工建筑物作为基础底图，感知设备是布设在其周边/之上的监测设施；两层之间的导入通道、本地存储键完全独立。`;
+          const sp = spatialContextFor(q);
+          if (sp) out += "\n\n" + sp;
+          else out += `\n\n（若用户问「某对象周边有几个……」，属空间关系问题：本地计算口径为「半径 km 可指定、默认 ${SPATIAL_DEFAULT_KM} km」。可直接用菜单「智能检索 → 周边对象统计」离线得到精确结果。）`;
+          return out;
+        },
+        // #8 从 AI 结果文本中提取可下钻的关键词（管理所/管理站/建筑物名），供 followup 按钮使用
+        suggestFrom: (txt) => {
+          const text = txt || "";
+          const set = new Set();
+          records.forEach((r) => { [r.office, r.station, r.name, r.btype].forEach((v) => { if (v && text.indexOf(String(v)) >= 0) set.add(String(v)); }); });
+          recordsBld.forEach((r) => { [r.office, r.station, r.name, r.btype].forEach((v) => { if (v && text.indexOf(String(v)) >= 0) set.add(String(v)); }); });
+          return [...set].slice(0, 10);
+        },
+        // #8 双击 followup 关键词 → 填入查询框并立即检索
+        runSearch: (kw) => {
+          const s = el("search"); if (s) s.value = kw || "";
+          if (typeof filter !== "undefined") filter.q = (kw || "").trim();
+          if (typeof render === "function") render();
+          closeModal();
+          toast("已在查询框填入：" + (kw || ""));
+        },
+        queryPrompt: (r) => `这是内部视频设备运维台账中的监控设备「${r.name}」，所属：${r.office || ""} / ${r.station || ""}，设备类型：${r.btype || ""}。已知参数：${JSON.stringify(r.params || {})}${r.description ? "；描述：" + r.description : ""}。请基于这些信息做结构化梳理与合理性校验，指出可能错漏，不要编造公开网络数据。`,
+        updatePrompt: (r) => `视频设备运维内部台账设备：${JSON.stringify({ name: r.name, office: r.office, station: r.station, btype: r.btype, params: r.params || {}, description: r.description || "" })}。请仅依据已有字段对缺失项做合理补全建议、对错漏项做校验。返回 JSON：{"params":{"键":"值"},"description":"一句话描述","changes":["变更说明"]}。只返回 JSON。`,
+        // v2.5.0 需求四-a：空间关系问句本地直答（离线精确），无匹配返回 "" 时照常走大模型
+        localAnswer: (q) => spatialAnswerText(q)
+      };
+      const acts = { search: focusSearch, filter: openFilter, add: () => openAdd(LAYER_DEV), import: () => triggerImport(LAYER_DEV), export: exportMenu,
+        // v2.5.0 双数据层入口：导入水工建筑物 / 添加水工建筑物 / 添加地点 / 周边对象统计
+        importBld: importBuildings, addBld: () => openAdd(LAYER_BLD, "building"), addPlace: () => openAdd(LAYER_BLD, "place"), spatialStat: () => openSpatialStat(),
+        batchPhotos: () => batchImportMenu("photos"), batchSheets: () => batchImportMenu("sheets"), exportPhotos: exportPhotosMenu,
+        netdisk: netdiskMenu, lan: lanMenu,
+        stats, locate, coord: getCoord, nearby: openNearby, measure: () => { measureMode ? exitMeasure() : enterMeasure(); }, layer: openBasemap,
+        addbasemap: openBasemap, sync: openSync, reset, help, about, changelog, platmatrix: platMatrix, delPhotos, delBuildings,
+        cleanInbox: cleanImportCache,
+        opsDefaultLoc: openOpsDefaultLoc, opsPlan: openOpsPlan, opsInspect: openOpsInspect, opsRoute: openOpsRoute,
+        aiSettings: () => AI.openSettings(), aiQuery: () => AI.openQuery(), aiUpdate: () => AI.openUpdate(), aiCorrect: () => AI.openCorrect(), aiChat: () => AI.openChat(), aiFreeQuery: () => AI.openFreeQuery(), kbImportFile, kbExport, kbImportBackup, aiHistory: () => AI.openHistory(),
+        // v2.4 新增管理入口
+        orgManager: () => openOrgManager(), btypeManager: () => openClassifyManager(), quickFavSettings: openQuickFavSettings,
+        tiandituKey: openTiandituKeySettings, errlog: openErrLog, menuRestoreHidden: openMenuRestoreHidden, menuHiddenList: openHiddenList };
+      function cleanImportCache() {
+        if (window.AndroidBridge && window.AndroidBridge.cleanInbox) { window.AndroidBridge.cleanInbox(); toast("已清理导入临时缓存"); }
+        else toast("当前环境（网页版）无导入缓存可清理");
+      }
+      // v2.4.3：扩展模块（升级/游记/备忘录）通过 window.__EXT_ACTS__ 自注册，避免每加一个功能都改 acts
+      const __ext = (window.__EXT_ACTS__ || {});
+      const __fn = acts[act] || __ext[act];
+      if (typeof __fn === "function") __fn();
+      else toast("该功能未装载（" + act + "），请检查安装包是否完整");   // fail-loud：不再静默无反应
+    };
+    // 方式1：右键/长按菜单项 → 加入/移出快捷常用
+    b.oncontextmenu = (e) => { e.preventDefault(); openMenuLongPress(b); };
+  }
+  // ---------- v2.4.8：菜单隐藏（不常用菜单可隐藏，界面更简洁；设置中可恢复）----------
+  const HM_KEY = (window.__APP_ID__ || "app") + "_hiddenmenus_v1";
+  // 保护项：恢复入口与常用设置不允许隐藏，避免用户把自己锁死
+  const HM_PROTECT = ["menuRestoreHidden", "menuHiddenList", "quickFavSettings", "errlog", "help", "about", "changelog"];
+  function loadHiddenMenus() {
+    try {
+      const a = JSON.parse(localStorage.getItem(HM_KEY) || "[]");
+      return Array.isArray(a) ? a.filter((x) => typeof x === "string" && HM_PROTECT.indexOf(x) < 0) : [];
+    } catch (e) { return []; }
+  }
+  function saveHiddenMenus(a) { try { localStorage.setItem(HM_KEY, JSON.stringify(a)); } catch (e) {} }
+
+  // ---------- v2.4.9：子菜单「隐藏 / 收藏」按钮（带二次确认，防误点）----------
+  var MACT_PREF = HM_KEY + "_macts";
+  function mactsEnabled() { try { return localStorage.getItem(MACT_PREF) !== "0"; } catch (e) { return true; } }
+  function setMactsEnabled(on) { try { localStorage.setItem(MACT_PREF, on ? "1" : "0"); } catch (e) {} }
+  function isFavAct(a) { try { return loadQuickFavs().indexOf(a) >= 0; } catch (e) { return false; } }
+  function clearMenuActs(root) {
+    var as = (root || document).querySelectorAll(".macts");
+    for (var i = 0; i < as.length; i++) { if (as[i].parentNode) as[i].parentNode.removeChild(as[i]); }
+  }
+  // 同步已注入按钮的显示状态（收藏星标 / 保护项置灰）
+  function syncMacts(wrap, act) {
+    if (!wrap) return;
+    var cs = wrap.children || [];
+    for (var i = 0; i < cs.length; i++) {
+      var c = cs[i];
+      if (!c.classList) continue;
+      if (c.classList.contains("hide")) {
+        var prot = HM_PROTECT.indexOf(act) >= 0;
+        if (prot) { c.classList.add("disabled"); c.setAttribute("title", "该菜单是恢复入口，不允许隐藏"); }
+      } else {
+        var on = isFavAct(act);
+        if (on) c.classList.add("on"); else c.classList.remove("on");
+        c.setAttribute("title", on ? "移出快捷常用" : "加入快捷常用");
+        c.textContent = on ? "\u2605" : "\u2606";
+      }
+    }
+  }
+  // 给抽屉内每个子菜单注入「收藏 / 隐藏」按钮
+  function decorateMenuButtons() {
+    var root = (document.getElementById && document.getElementById("drawer")) || document;
+    if (!root || !root.querySelectorAll) return;
+    if (!mactsEnabled()) { clearMenuActs(root); return; }
+    var btns = root.querySelectorAll(".menu-btn");
+    for (var i = 0; i < btns.length; i++) (function (b) {
+      var act = b.dataset ? (b.dataset.act || "") : "";
+      if (!act) return;
+      if (b.classList && (b.classList.contains("pin") || b.classList.contains("qf-btn"))) return;
+      if (loadHiddenMenus().indexOf(act) >= 0) return;
+      var ex = b.querySelector ? b.querySelector(".macts") : null;
+      if (ex) { syncMacts(ex, act); return; }   // 已装饰过：只同步状态（收藏星标实时反映）
+      var prot = HM_PROTECT.indexOf(act) >= 0;
+      var wrap = document.createElement("span");
+      wrap.className = "macts";
+      var fav = document.createElement("span");
+      var on = isFavAct(act);
+      fav.className = "mact" + (on ? " on" : "");
+      fav.setAttribute("role", "button");
+      fav.setAttribute("title", on ? "移出快捷常用" : "加入快捷常用");
+      fav.textContent = on ? "\u2605" : "\u2606";
+      var hid = document.createElement("span");
+      hid.className = "mact hide" + (prot ? " disabled" : "");
+      hid.setAttribute("role", "button");
+      hid.setAttribute("title", prot ? "该菜单是恢复入口，不允许隐藏" : "隐藏此菜单");
+      hid.textContent = "\uD83D\uDEAB";
+      function stopProp(e) { if (e && e.stopPropagation) e.stopPropagation(); }
+      function onClick(e) { if (e && e.stopPropagation) e.stopPropagation(); if (e && e.preventDefault) e.preventDefault(); }
+      fav.addEventListener("click", function (e) { onClick(e); confirmFavMenu(act, b); });
+      fav.addEventListener("touchend", stopProp);
+      hid.addEventListener("click", function (e) { onClick(e); confirmHideMenu(act, b); });
+      hid.addEventListener("touchend", stopProp);
+      wrap.appendChild(fav); wrap.appendChild(hid);
+      b.appendChild(wrap);
+    })(btns[i]);
+    ensureMenuActToggle(root);
+  }
+  // 抽屉头部 ⚙ 开关：一键收起/显示这些按钮
+  function ensureMenuActToggle(root) {
+    try {
+      var head = root.querySelector ? root.querySelector(".head") : null;
+      if (!head) return;
+      var t = document.getElementById("mactToggle");
+      if (!t) {
+        t = document.createElement("span");
+        t.id = "mactToggle";
+        t.className = "macttg";
+        t.setAttribute("title", "显示/隐藏 菜单上的收藏与隐藏按钮");
+        t.addEventListener("click", function (e) {
+          if (e && e.stopPropagation) e.stopPropagation();
+          var on = !mactsEnabled();
+          setMactsEnabled(on);
+          clearMenuActs(root);
+          if (on) decorateMenuButtons();
+          else if (typeof toast === "function") toast("已收起菜单上的收藏/隐藏按钮（长按菜单项仍可操作）");
+        });
+        if (head.firstChild) head.insertBefore(t, head.firstChild); else head.appendChild(t);
+      }
+      t.textContent = mactsEnabled() ? "\u2699\uFE0F" : "\u2699";
+    } catch (e) {}
+  }
+  // 二次确认：收藏 / 移出快捷常用
+  function confirmFavMenu(act, b) {
+    var title = (typeof btnMenuTitle === "function" ? btnMenuTitle(b) : "") || act;
+    var on = isFavAct(act);
+    openModal(on ? "确认移出快捷常用？" : "确认加入快捷常用？",
+      '<div class="hint">' + (on ? '将把「<b>' + esc(title) + '</b>」从「快捷常用」中移出。' : '将把「<b>' + esc(title) + '</b>」加入「快捷常用」，显示在查询 / 筛选下方。') + '原菜单位置的功能<b>仍然保留</b>。</div>',
+      '<button class="btn ghost" id="cfCancel">取消</button><button class="btn primary" id="cfOk">' + (on ? "确认移出" : "确认收藏") + '</button>');
+    var c = el("cfCancel"); if (c) c.onclick = closeModal;
+    var o = el("cfOk");
+    if (o) o.onclick = function () { closeModal(); try { toggleQuickFav(act); } catch (e) { toast("操作失败：" + (e && e.message ? e.message : e)); } };
+  }
+  // 二次确认：隐藏菜单
+  function confirmHideMenu(act, b) {
+    var title = (typeof btnMenuTitle === "function" ? btnMenuTitle(b) : "") || act;
+    if (HM_PROTECT.indexOf(act) >= 0) { toast("该菜单是恢复入口，不允许隐藏"); return; }
+    openModal("确认隐藏此菜单？",
+      '<div class="hint">即将隐藏「<b>' + esc(title) + '</b>」。<br/>隐藏<b>不会删除</b>任何功能，可随时在「设置 → 恢复隐藏子菜单 / 隐藏子菜单列表」中恢复显示。</div>',
+      '<button class="btn ghost" id="cfCancel">取消</button><button class="btn primary" id="cfOk">确认隐藏</button>');
+    var c = el("cfCancel"); if (c) c.onclick = closeModal;
+    var o = el("cfOk");
+    if (o) o.onclick = function () { closeModal(); try { hideMenuAct(act); } catch (e) { toast("操作失败：" + (e && e.message ? e.message : e)); } };
+  }
+  // ---------- /v2.4.9 子菜单「隐藏 / 收藏」按钮 ----------
+  function applyHiddenMenus() {
+    const hm = loadHiddenMenus();
+    const root = (document.getElementById && document.getElementById("drawer")) || document;
+    const btns = root.querySelectorAll(".menu-btn");
+    for (let i = 0; i < btns.length; i++) {
+      const act = btns[i].dataset.act;
+      btns[i].style.display = (act && hm.indexOf(act) >= 0) ? "none" : "";
+    }
+    // 整组被隐藏完时连分组标题一起收起，避免留下空标题
+    const subs = root.querySelectorAll(".msub");
+    for (let i = 0; i < subs.length; i++) {
+      const vis = Array.prototype.filter.call(subs[i].querySelectorAll(".menu-btn"), (b) => b.style.display !== "none");
+      const grp = subs[i].previousElementSibling;
+      if (grp && grp.classList && grp.classList.contains("mgroup")) grp.style.display = vis.length ? "" : "none";
+    }
+    try { decorateMenuButtons(); } catch (e) {}
+  }
+  function hideMenuAct(act) {
+    if (!act) return;
+    if (HM_PROTECT.indexOf(act) >= 0) { toast("该菜单是恢复入口，不允许隐藏"); return; }
+    const cur = loadHiddenMenus();
+    if (cur.indexOf(act) < 0) cur.push(act);
+    try { saveQuickFavs(loadQuickFavs().filter((x) => x !== act)); } catch (e) {}   // 同步移出快捷常用，避免残留入口
+    saveHiddenMenus(cur); applyHiddenMenus();
+    try { renderQuickFavs(); } catch (e) {}
+    toast("已隐藏该菜单，可在「设置 → 恢复隐藏子菜单」中恢复");
+  }
+  function restoreMenuAct(act) {
+    saveHiddenMenus(loadHiddenMenus().filter((x) => x !== act));
+    applyHiddenMenus(); toast("已恢复显示该菜单");
+  }
+  // 长按/右键菜单项：保留原有「加入/移出快捷常用」，新增「隐藏此菜单」
+  function openMenuLongPress(b) {
+    const act = b ? b.dataset.act : "";
+    if (!act) return;
+    if (HM_PROTECT.indexOf(act) >= 0) { toggleQuickFav(act); return; }
+    const isFav = loadQuickFavs().indexOf(act) >= 0;
+    const title = btnMenuTitle(b) || act;
+    openModal("菜单操作：" + title,
+      '<div class="hint">选择对该菜单的操作。<b>隐藏不会删除功能</b>，随时可在「设置」中恢复显示。</div>',
+      '<button class="btn ghost" id="hmFav">' + (isFav ? "\u2b50 \u79fb\u51fa\u5feb\u6377\u5e38\u7528" : "\u2b50 \u52a0\u5165\u5feb\u6377\u5e38\u7528") + '</button>'
+      + '<button class="btn ghost" id="hmHide">\U0001f6ab \u9690\u85cf\u6b64\u83dc\u5355</button>'
+      + '<button class="btn primary" id="hmCancel">\u53d6\u6d88</button>');
+    const f = el("hmFav"); if (f) f.onclick = () => { closeModal(); toggleQuickFav(act); };
+    const h = el("hmHide"); if (h) h.onclick = () => { closeModal(); hideMenuAct(act); };
+    const c = el("hmCancel"); if (c) c.onclick = closeModal;
+  }
+  // 设置子菜单①：恢复隐藏子菜单（一键全部显示）
+  function openMenuRestoreHidden() {
+    const hm = loadHiddenMenus();
+    if (!hm.length) { toast("当前没有被隐藏的菜单"); return; }
+    saveHiddenMenus([]); applyHiddenMenus(); toast("已恢复全部 " + hm.length + " 个隐藏菜单");
+  }
+  // 设置子菜单②：隐藏子菜单列表（点击任意一项即恢复）
+  function openHiddenList() {
+    const hm = loadHiddenMenus();
+    if (!hm.length) {
+      openModal("\u9690\u85cf\u5b50\u83dc\u5355\u5217\u8868", '<div class="hint">\u5f53\u524d\u6ca1\u6709\u88ab\u9690\u85cf\u7684\u83dc\u5355\u3002</div>',
+        '<button class="btn primary" onclick="APP.close()">\u5173\u95ed</button>');
+      return;
+    }
+    const rows = hm.map((act) => {
+      const src = document.querySelector('.drawer .menu-btn[data-act="' + act + '"]');
+      const ico = src && src.querySelector(".ico") ? src.querySelector(".ico").textContent : "\U0001f6ab";
+      return '<button class="menu-btn" data-hm="' + esc(act) + '"><span class="ico">' + ico + '</span><span>'
+        + esc(btnMenuTitle(src) || act) + '<span class="sub">\u70b9\u51fb\u6062\u590d\u663e\u793a</span></span></button>';
+    }).join("");
+    openModal("\u9690\u85cf\u5b50\u83dc\u5355\uff08" + hm.length + " \u4e2a\uff09",
+      '<div class="hint">\u70b9\u51fb\u4efb\u610f\u4e00\u9879\u5373\u53ef\u6062\u590d\u663e\u793a\uff1b\u4e5f\u53ef\u4e00\u952e\u5168\u90e8\u6062\u590d\u3002</div>'
+      + '<div style="margin-top:8px">' + rows + '</div>',
+      '<button class="btn ghost" id="hmAll">\u5168\u90e8\u6062\u590d</button>'
+      + '<button class="btn primary" onclick="APP.close()">\u5173\u95ed</button>');
+    const items = document.querySelectorAll("#modalBody [data-hm]");
+    for (let i = 0; i < items.length; i++) {
+      items[i].onclick = (function (a) { return function () { closeModal(); restoreMenuAct(a); openHiddenList(); }; })(items[i].getAttribute("data-hm"));
+    }
+    const a = el("hmAll"); if (a) a.onclick = () => { closeModal(); openMenuRestoreHidden(); };
+  }
+
+  // ---------- 快捷常用（v2.4）：用户自选高频功能，置于查询/筛选之下首位；原子菜单保留 ----------
+  const QF_KEY = "shipin_quickfavs_v1";
+  const QF_EXCLUDE = ["search", "filter"];
+  function loadQuickFavs() { try { const a = JSON.parse(localStorage.getItem(QF_KEY) || "[]"); return Array.isArray(a) ? a.filter((x) => typeof x === "string" && !QF_EXCLUDE.includes(x)) : []; } catch (e) { return []; } }
+  function saveQuickFavs(a) { try { localStorage.setItem(QF_KEY, JSON.stringify(a)); } catch (e) {} }
+  // ---------- 错误日志查看器（功能⑯：信息与帮助 → 错误日志）----------
+  function openErrLog() {
+    var KEY = (window.__APP_ID__ || "app") + "_errlog_v1";
+    var arr = [];
+    try { arr = JSON.parse(localStorage.getItem(KEY) || "[]"); if (!Array.isArray(arr)) arr = []; } catch (e) { arr = []; }
+    arr = arr.slice().reverse(); // 最新在前
+    var body;
+    if (!arr.length) {
+      body = '<div class="hint">暂无错误记录。运行中的脚本错误会在此自动收集，便于反馈排查。</div>';
+    } else {
+      body = '<div style="max-height:62vh;overflow:auto;font-size:12px">' + arr.map(function (e) {
+        return '<div style="border-bottom:1px solid rgba(255,255,255,.08);padding:8px 2px">' +
+          '<div style="color:#8fb7e8;font-size:11px">' + esc(e.t || "") + '</div>' +
+          '<div style="color:#e8eef6;white-space:pre-wrap;word-break:break-all;margin-top:3px">' + esc(e.m || "") + '</div></div>';
+      }).join("") + '</div>';
+    }
+    openModal("错误日志（最近 " + arr.length + " 条）", body,
+      '<button class="btn ghost" id="elCopy">复制全部</button><button class="btn ghost" id="elClear">清空</button><button class="btn primary" id="elClose">关闭</button>');
+    var c = el("elCopy"); if (c) c.onclick = function () {
+      var txt = arr.map(function (e) { return (e.t || "") + "\n" + (e.m || ""); }).join("\n\n");
+      copyText(txt); toast("已复制 " + arr.length + " 条错误日志");
+    };
+    var cl = el("elClear"); if (cl) cl.onclick = function () { localStorage.removeItem(KEY); closeModal(); toast("已清空错误日志"); };
+    var x = el("elClose"); if (x) x.onclick = closeModal;
+  }
+
+  function toggleQuickFav(act) {
+    if (act && navigator.vibrate) { try { navigator.vibrate(30); } catch (_) {} } // ⑨ 长按反馈：振动（不支持的环境静默忽略）
+    if (!act || QF_EXCLUDE.includes(act)) return;
+    const cur = loadQuickFavs();
+    const i = cur.indexOf(act);
+    if (i >= 0) { cur.splice(i, 1); toast("已从快捷常用移出"); }
+    else { cur.push(act); toast("已加入快捷常用"); }
+    saveQuickFavs(cur); renderQuickFavs();
+  }
+  function btnMenuTitle(b) {
+    const sp = b ? b.querySelector("span:nth-child(2)") : null;
+    if (!sp) return "";
+    const n = sp.childNodes[0];
+    return ((n && n.nodeType === 3 ? n.textContent : sp.textContent) || "").trim();
+  }
+  function renderQuickFavs() {
+    const box = el("quickFavGroup"); if (!box) return;
+    const favs = loadQuickFavs();
+    if (!favs.length) { box.innerHTML = `<div class="hint" style="padding:6px 10px">尚未设置常用功能：右键/长按任意菜单项，或到「设置 → 快捷常用设置」勾选</div>`; return; }
+    box.innerHTML = favs.map((act) => {
+      const src = document.querySelector(`.drawer .menu-btn[data-act="${act}"]`);
+      const ico = src && src.querySelector(".ico") ? src.querySelector(".ico").textContent : "⭐";
+      const title = btnMenuTitle(src) || act;
+      return `<button class="menu-btn qf-btn" data-act="${act}"><span class="ico">${ico}</span><span>${esc(title)}<span class="sub">快捷常用 · 长按移出</span></span></button>`;
+    }).join("");
+    box.querySelectorAll(".menu-btn").forEach(bindMenuBtn);
+    try { decorateMenuButtons(); } catch (e) {}
+  }
+  function openQuickFavSettings() {
+    const all = [...document.querySelectorAll(".drawer .menu-btn:not(.qf-btn)")].filter((b) => !QF_EXCLUDE.includes(b.dataset.act));
+    const favs = loadQuickFavs();
+    const html = `<div class="hint">勾选常用功能，保存后显示在「快捷常用」菜单（置于查询/筛选之下首位）。也可在抽屉中<b>右键/长按</b>任意菜单项快速添加/移出。原子菜单全部保留。</div>
+      <div style="max-height:46vh;overflow:auto">` +
+      all.map((b) => {
+        const act = b.dataset.act;
+        const ico = b.querySelector(".ico") ? b.querySelector(".ico").textContent : "";
+        const on = favs.includes(act);
+        return `<label style="display:flex;align-items:center;gap:8px;padding:7px 4px;cursor:pointer;border-bottom:1px solid rgba(127,127,127,.15)"><input type="checkbox" class="qfcb" value="${act}" ${on ? "checked" : ""}/><span>${ico} ${esc(btnMenuTitle(b) || act)}</span></label>`;
+      }).join("") + `</div>`;
+    openModal("快捷常用设置", html, `<button class="btn ghost" id="qfCancel">取消</button><button class="btn primary" id="qfSave">保存</button>`);
+    el("qfCancel").onclick = closeModal;
+    el("qfSave").onclick = () => {
+      const sel = [...document.querySelectorAll(".qfcb:checked")].map((c) => c.value);
+      saveQuickFavs(sel); closeModal(); renderQuickFavs(); toast(`已保存快捷常用（${sel.length} 项）`);
+    };
+  }
+  function focusSearch() {
+    const s = el("search"); if (!s) return;
+    s.focus(); s.scrollIntoView({ block: "center" });
+    toast("请输入名称 / 机构关键字进行查询");
+  }
+  function closeDrawer() { el("drawer").classList.remove("open"); el("mask").classList.remove("show"); }
+
+  // ---------- 右键上下文菜单（显示界面智能挂载 AI / 常规功能）----------
+  function _ctxClose() { closeCtxMenu(); }
+  function _ctxEsc(e) { if (e.key === "Escape") closeCtxMenu(); }
+  function closeCtxMenu() {
+    const m = el("ctxMenu"); if (m) m.remove();
+    document.removeEventListener("click", _ctxClose, true);
+    document.removeEventListener("keydown", _ctxEsc);
+  }
+  function openCtxMenu(x, y, items) {
+    closeCtxMenu();
+    const m = document.createElement("div");
+    m.id = "ctxMenu"; m.className = "ctx-menu";
+    m.innerHTML = items.map((it, i) =>
+      it.sep ? '<div class="ctx-sep"></div>'
+      : `<div class="ctx-item" data-i="${i}">${it.icon ? '<span class="ctx-ico">' + it.icon + "</span>" : ""}${esc(it.label)}</div>`
+    ).join("");
+    document.body.appendChild(m);
+    const w = m.offsetWidth, h = m.offsetHeight;
+    if (x + w > window.innerWidth) x = Math.max(4, window.innerWidth - w - 4);
+    if (y + h > window.innerHeight) y = Math.max(4, window.innerHeight - h - 4);
+    m.style.left = x + "px"; m.style.top = y + "px";
+    m.querySelectorAll(".ctx-item").forEach((node) => (node.onclick = () => {
+      const it = items[+node.dataset.i]; closeCtxMenu(); if (it && it.fn) it.fn();
+    }));
+    setTimeout(() => document.addEventListener("click", _ctxClose, false), 0);
+    document.addEventListener("keydown", _ctxEsc);
+  }
+  function ctxItemsFor(r) {
+    return [
+      { label: "智能查询", icon: "🔍", fn: () => AI.query(r) },
+      { label: "智能更新", icon: "🤖", fn: () => AI.update(r) },
+      { label: "智能纠错", icon: "✏️", fn: () => AI.correct(r) },
+      { label: "AI 对话", icon: "💬", fn: () => AI.openChat() },
+      { sep: true },
+      { label: "定位到地图", icon: "📍", fn: () => locateInMap(r) },
+      { label: "编辑", icon: "📝", fn: () => openEdit(r.id) },
+      { label: "导出此条", icon: "📤", fn: () => exportOne(r) },
+      { label: "删除", icon: "🗑️", fn: () => deleteRecord(r.id) },
+    ];
+  }
+  function mapCtxItems(latlng) {
+    return [
+      { label: "🤖 AI 智能建卡", fn: () => aiAddAt(latlng) },
+      { label: "📍 在此添加建筑物", fn: () => openAddForm({ lat: latlng.lat, lon: latlng.lng }) },
+      { sep: true },
+      { label: "⭐ 收藏当前窗口", fn: () => saveFavWindow() },
+      { label: "🏠 回到主菜单", fn: () => tripleTapMenu() },
+    ];
+  }
+  async function deleteRecord(id) {
+    // v2.5.0 双数据层：右键菜单的删除必须按对象所属层写**对应的** store 键。
+    // 原实现无条件 Store.patch（设备层），删建筑物时会把 "bld:xxx" 塞进设备层 deleted，
+    // 表现为「确认删除后建筑物还在」+ 设备增量被污染。
+    const r = findRec(id); if (!r) return;
+    const bld = isBld(r);
+    if (!confirm("确认删除「" + (r.name || "未命名") + "」？此操作不可恢复。")) return;
+    const patchFn = (d) => {
+      d.added = d.added || []; d.updated = d.updated || {};
+      const i = d.added.findIndex((a) => a.id === id);
+      if (i >= 0) d.added.splice(i, 1);
+      else { d.deleted = d.deleted || []; if (!d.deleted.includes(id)) d.deleted.push(id); delete d.updated[id]; }
+    };
+    if (bld) { await Store.bld.patch(patchFn); DELTA_BLD = await Store.bld.get(); }
+    else { await Store.patch(patchFn); DELTA = await Store.get(); }
+    merge(); render();
+    toast("已删除：" + (r.name || "未命名"));
+  }
+  function exportOne(r) {
+    try {
+      const name = (r.name || "record").replace(/[\\/:*?"<>|]/g, "_");
+      IO.downloadText(name + ".csv", IO.buildCsv([r]));
+      toast("已导出：" + (r.name || "记录"));
+    } catch (e) { toast("导出失败：" + e.message); }
+  }
+  function safeJson(s) {
+    if (!s) return null;
+    s = String(s).trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "");
+    const a = s.indexOf("{"); const b = s.lastIndexOf("}");
+    if (a >= 0 && b > a) s = s.slice(a, b + 1);
+    try { return JSON.parse(s); } catch (e) { return null; }
+  }
+  async function aiAddAt(latlng) {
+    openModal("AI 智能建卡",
+      `<div class="hint">描述这个建筑物（如"温汤所管理段的一座节制闸，3 孔，闸宽 6 米"），AI 将自动提取名称/管理所/类型/参数并预填表单。</div>
+       <div class="field" style="margin-top:10px"><textarea id="aiAddDesc" class="inp" rows="4" placeholder="在此输入描述…"></textarea></div>`,
+      `<button class="btn ghost" id="aiAddCancel">取消</button><button class="btn primary" id="aiAddGo">AI 提取并建卡</button>`);
+    el("aiAddCancel").onclick = closeModal;
+    el("aiAddGo").onclick = async () => {
+      const desc = el("aiAddDesc").value.trim(); if (!desc) return toast("请先输入描述");
+      busy("AI 提取中…");
+      try {
+        const sys = (AI.domain && AI.domain.internal)
+          ? '你是水利工程内部台账录入助手。依据用户描述提取结构化字段。返回严格 JSON：{"name":"名称","office":"管理所","station":"管理站/段","btype":"建筑物类型","params":{"键":"值"},"description":"一句话"}。只返回 JSON。'
+          : '你是古建/地点信息录入助手。依据描述提取结构化字段。返回严格 JSON：{"name":"名称","office":"管理所/地区","station":"管理站/段","btype":"类型","params":{"键":"值"},"description":"一句话"}。只返回 JSON。';
+        const raw = await AI.strategyCall(desc, { system: sys, json: true });
+        const o = safeJson(raw);
+        if (!o || !o.name) throw new Error("AI 未返回可解析的 JSON");
+        closeModal();
+        editId = null;
+        openAddForm({ lat: latlng.lat, lon: latlng.lng });
+        const setV = (id, v) => { const e = el(id); if (e && v != null && v !== "") e.value = v; };
+        setV("fName", o.name); setV("fOffice", o.office); setV("fBtype", o.btype); setV("fStation", o.station);
+        if (o.params) setV("fParams", Object.keys(o.params).map((k) => k + " : " + o.params[k]).join("\n"));
+        toast("已用 AI 提取结果预填，请核对后保存");
+      } catch (e) { toast("AI 建卡失败：" + e.message); }
+    };
+  }
+  function openSync() {
+    const html = `<div class="hint">把当前「我的改动」备份为文件，或导入他人/他机的改动。</div>`;
+    openModal("我的改动备份", html, `<button class="btn ghost" id="syExp">导出备份</button><button class="btn primary" id="syImp">导入备份</button><button class="btn ghost" onclick="APP.close()">关闭</button>`);
+    el("syExp").onclick = syncExport; el("syImp").onclick = syncImport;
+  }
+  function triggerImport(layer) {
+    // 修复：WebView 下局部 input 被 GC → onchange 不触发 → 点击 csv 等"无反应"
+    // Android 系统选择器按 MIME 过滤：.ovkmz/.7z 等无 MIME 映射会被隐藏导致「选不了」，故加 */* 兜底，格式由 doImport 校验
+    pickFiles({ accept: ".ovkmz,.kmz,.kml,.csv,.xls,.xlsx,.ovobj,.obj,application/vnd.google-earth.kmz,application/vnd.google-earth.kml+xml,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,*/*", onPick: (files) => files[0] && doImport(files[0], layer) });
+  }
+  // v2.5.0：导入水工建筑物（子菜单）—— 只写建筑物层，绝不动感知设备
+  function importBuildings() {
+    openModal("导入水工建筑物",
+      `<div class="hint">把水利一张图（或奥维）导出的<b>水工建筑物</b>文件导入本机的「水工建筑物」数据层，作为基础底图，可查询、可搜索。</div>
+       <div class="hint" style="border:1px dashed var(--accent);border-radius:10px;padding:9px 12px;line-height:1.9">
+         · 支持格式：ovkmz / kmz / csv / kml / xls / xlsx / ovobj<br>
+         · 该导入<b>只影响建筑物数据</b>；感知设备的导入导出行为完全不变<br>
+         · 同 id（或同名同坐标）的记录会<b>覆盖更新</b>，导入前会明确提示「新增 N 条 / 覆盖 M 条」
+       </div>`,
+      `<button class="btn ghost" id="ibCancel">取消</button><button class="btn primary" id="ibGo">选择文件…</button>`);
+    el("ibCancel").onclick = closeModal;
+    el("ibGo").onclick = () => { closeModal(); triggerImport(LAYER_BLD); };
+  }
+
+  // ================= 运行维护 / 旅游打卡 / 智能分析（P5 · 2026-08-23） =================
+  // 数据层：Store.ops（localStorage），与建筑物 delta 分离
+  const OPS_TYPES = ["日常检查", "例行维护", "故障处理", "应急响应", "其他"];
+  const INSPECT_TYPES = ["日常巡视", "例行维护", "故障处置", "应急响应", "其他"];
+  function getOps() {
+    const s = (window.Store && Store.ops) ? Store.ops.get() : {};
+    s.defaultLoc = s.defaultLoc || null;
+    s.plans = s.plans || [];
+    s.inspects = s.inspects || [];
+    s.routes = s.routes || [];
+    return s;
+  }
+  function setOps(s) { if (window.Store && Store.ops) Store.ops.set(s); }
+
+  // 估算路上时长（小时）：直线距离 / 假设车速（默认 30km/h，UI 可调）
+  function estDriveHours(lat1, lon1, lat2, lon2, speedKmh) {
+    const R = 6371, toR = Math.PI / 180;
+    const d = R * 2 * Math.asin(Math.sqrt(
+      Math.pow(Math.sin((lat2 - lat1) * toR / 2), 2) +
+      Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.pow(Math.sin((lon2 - lon1) * toR / 2), 2)));
+    return d / (speedKmh || 30);
+  }
+  function fmtHours(h) {
+    const m = Math.round(h * 60);
+    if (m < 60) return m + " 分钟";
+    const hh = Math.floor(m / 60), mm = m % 60;
+    return hh + " 小时" + (mm ? " " + mm + " 分" : "");
+  }
+
+  // ① 设置默认出发位置
+  function openOpsDefaultLoc() {
+    const s = getOps();
+    const dl = s.defaultLoc;
+    const opts = records.map((r) => `<option value="${r.id}">${esc(r.name)}（${esc(r.office || "")}）</option>`).join("");
+    const html = `
+      <div class="hint">设置默认出发位置：巡视 / 路线从该点开始计算时长。</div>
+      <div class="field"><label>从已有建筑物选择</label><select id="dlSel" class="inp"><option value="">— 自定义 —</option>${opts}</select></div>
+      <div class="field"><label>名称（自定义时填）</label><input id="dlName" class="inp" value="${dl && dl.custom ? esc(dl.name || "") : ""}" placeholder="如：管理所大院"></div>
+      <div class="field"><label>纬度</label><input id="dlLat" class="inp" inputmode="decimal" value="${dl ? dl.lat : ""}" placeholder="如 40.37"></div>
+      <div class="field"><label>经度</label><input id="dlLng" class="inp" inputmode="decimal" value="${dl ? dl.lon : ""}" placeholder="如 116.63"></div>
+      <div class="field"><label>当前已设</label><div class="hint" id="dlCur">${dl ? esc(dl.name + " (" + dl.lat + ", " + dl.lon + ")") : "（未设置）"}</div></div>`;
+    openModal("设置默认出发位置", html, `<button class="btn ghost" id="dlClear">清除</button><button class="btn ghost" id="dlCancel">取消</button><button class="btn primary" id="dlOk">保存</button>`);
+    el("dlSel").onchange = () => {
+      const r = records.find((x) => x.id === el("dlSel").value);
+      if (r) { el("dlLat").value = r.lat; el("dlLng").value = r.lon; el("dlName").value = r.name; }
+    };
+    el("dlCancel").onclick = closeModal;
+    el("dlClear").onclick = () => { const s = getOps(); s.defaultLoc = null; setOps(s); closeModal(); toast("已清除默认出发位置"); };
+    el("dlOk").onclick = () => {
+      const id = el("dlSel").value;
+      const r = id ? records.find((x) => x.id === id) : null;
+      const lat = parseFloat(el("dlLat").value), lon = parseFloat(el("dlLng").value);
+      if (!isFinite(lat) || !isFinite(lon)) return toast("请先选择建筑物或填写有效经纬度");
+      const s = getOps();
+      s.defaultLoc = r ? { id: r.id, name: r.name, lat: +r.lat, lon: +r.lon, custom: false }
+                      : { name: el("dlName").value.trim() || "自定义点", lat, lon, custom: true };
+      setOps(s); closeModal();
+      toast("已保存默认出发位置：" + s.defaultLoc.name);
+    };
+  }
+
+  // ② 智能分析计划
+  function openOpsPlan() {
+    const s = getOps();
+    const rows = s.plans.map((p, i) => `<div class="ops-row"><span class="ops-tag">${esc(p.type)}</span>
+      <span class="ops-main"><b>${esc(p.time || "未填时间")}</b> · 范围：${esc(p.scope || "—")} · 计划处理：${esc(p.planHandle || "—")}</span>
+      <button class="ops-del" data-i="${i}">删</button></div>`).join("") || `<div class="hint">暂无计划，下方添加。</div>`;
+    const typeOpts = OPS_TYPES.map((t) => `<option>${t}</option>`).join("");
+    const html = `<div class="hint">智能分析计划：日常检查 / 例行维护 / 故障处理 / 应急响应 / 其他。</div>
+      <div class="ops-list">${rows}</div>
+      <div class="ops-form">
+        <div class="field"><label>类型</label><select id="plType" class="inp">${typeOpts}</select></div>
+        <div class="field"><label>时间</label><input id="plTime" class="inp" type="datetime-local" class="inp"></div>
+        <div class="field"><label>范围</label><input id="plScope" class="inp" placeholder="如：温汤所全段"></div>
+        <div class="field"><label>计划处理时间</label><input id="plHandle" class="inp" type="datetime-local"></div>
+        <div class="field"><label>备注</label><input id="plNote" class="inp" placeholder="可选"></div>
+        <button class="btn primary" id="plAdd">添加计划</button>
+      </div>`;
+    openModal("智能分析计划", html, `<button class="btn ghost" id="plClose">关闭</button>`);
+    el("plClose").onclick = closeModal;
+    el("plAdd").onclick = () => {
+      const s = getOps();
+      s.plans.push({ id: "p" + Date.now().toString(36), type: el("plType").value, time: el("plTime").value, scope: el("plScope").value.trim(), planHandle: el("plHandle").value, note: el("plNote").value.trim() });
+      setOps(s); openOpsPlan(); // 刷新
+    };
+    document.querySelectorAll(".ops-del").forEach((b) => b.onclick = () => {
+      const s = getOps(); s.plans.splice(+b.dataset.i, 1); setOps(s); openOpsPlan();
+    });
+  }
+
+  // ③ 巡视检查（含巡视类型 / 显示坐标只读 / 是否计划内）
+  function openOpsInspect() {
+    const s = getOps();
+    const rows = s.inspects.map((it, i) => `<div class="ops-row"><span class="ops-tag">${esc(it.type)}</span>
+      <span class="ops-main"><b>${esc(it.bname || "未选建筑物")}</b> · ${it.planned ? "计划内" : "计划外"} · 坐标：${it.coord ? it.coord.lat.toFixed(5) + "," + it.coord.lon.toFixed(5) : "—"}</span>
+      <button class="ops-del" data-i="${i}">删</button></div>`).join("") || `<div class="hint">暂无巡视记录，下方新增（自动获取当前位置坐标，只读）。</div>`;
+    const typeOpts = INSPECT_TYPES.map((t) => `<option>${t}</option>`).join("");
+    const bOpts = records.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+    const html = `<div class="hint">巡视检查（分析）：选择巡视类型、关联设备（自动获取当前坐标只读）、标记是否计划内。</div>
+      <div class="ops-list">${rows}</div>
+      <div class="ops-form">
+        <div class="field"><label>巡视类型</label><select id="insType" class="inp">${typeOpts}</select></div>
+        <div class="field"><label>关联建筑物</label><select id="insBid" class="inp"><option value="">— 选建筑物 —</option>${bOpts}</select></div>
+        <div class="field"><label>坐标（自动获取，只读）</label><input id="insCoord" class="inp" readonly placeholder="点「获取当前坐标」"></div>
+        <div class="field"><label><input type="checkbox" id="insPlanned"> 是否计划内维护</label></div>
+        <button class="btn primary" id="insGet">获取当前坐标</button>
+        <button class="btn primary" id="insAdd" style="margin-left:8px">记录巡视</button>
+      </div>`;
+    openModal("巡视检查", html, `<button class="btn ghost" id="insClose">关闭</button>`);
+    el("insClose").onclick = closeModal;
+    el("insGet").onclick = () => {
+      if (window.AndroidBridge && window.AndroidBridge.getLoc) {
+        window.AndroidBridge.getLoc((lat, lon) => { el("insCoord").value = lat + "," + lon; });
+      } else if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((pos) => { el("insCoord").value = pos.coords.latitude + "," + pos.coords.longitude; }, () => toast("定位失败，请重试"));
+      } else toast("当前环境不支持定位");
+    };
+    el("insAdd").onclick = () => {
+      const bid = el("insBid").value;
+      const b = bid ? records.find((x) => x.id === bid) : null;
+      const coord = (el("insCoord").value || "").split(",").map(Number);
+      if (!b) return toast("请先关联建筑物");
+      if (!(coord.length === 2 && isFinite(coord[0]) && isFinite(coord[1]))) return toast("请先获取当前坐标");
+      const s = getOps();
+      s.inspects.push({ id: "i" + Date.now().toString(36), type: el("insType").value, bid, bname: b.name, coord: { lat: coord[0], lon: coord[1] }, planned: el("insPlanned").checked, at: new Date().toISOString() });
+      setOps(s); openOpsInspect();
+    };
+    document.querySelectorAll(".ops-del").forEach((b) => b.onclick = () => {
+      const s = getOps(); s.inspects.splice(+b.dataset.i, 1); setOps(s); openOpsInspect();
+    });
+  }
+
+  // ④ 我的巡视路线（含时长估算）
+  function openOpsRoute() {
+    const s = getOps();
+    const dl = s.defaultLoc;
+    const rows = s.routes.map((rt, i) => {
+      const pts = rt.points.map((pid) => records.find((r) => r.id === pid)).filter(Boolean);
+      let drive = 0, stay = 0;
+      const speed = rt.speed || 30, stayMin = rt.stayMin || 10;
+      let prev = dl ? { lat: +dl.lat, lon: +dl.lon } : (pts[0] ? { lat: +pts[0].lat, lon: +pts[0].lon } : null);
+      for (const p of pts) {
+        if (prev) drive += estDriveHours(prev.lat, prev.lon, +p.lat, +p.lon, speed);
+        stay += stayMin / 60; prev = { lat: +p.lat, lon: +p.lon };
+      }
+      const total = drive + stay;
+      return `<div class="ops-row"><span class="ops-tag">${esc(rt.name || "路线")}</span>
+        <span class="ops-main">${pts.length} 点 · 路上 ${fmtHours(drive)} · 停留 ${fmtHours(stay)} · <b>总 ${fmtHours(total)}</b> · 车速${speed} 停留${stayMin}分/点</span>
+        <button class="ops-del" data-i="${i}">删</button></div>`;
+    }).join("") || `<div class="hint">暂无路线。添加路线并选择途经建筑物，自动估算巡视时长（从默认出发位置起算）。</div>`;
+    const bOpts = records.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+    const html = `<div class="hint">我的巡视路线：选择途经建筑物，从默认出发位置起算总时长（路上 + 停留）。</div>
+      <div class="ops-list">${rows}</div>
+      <div class="ops-form">
+        <div class="field"><label>路线名称</label><input id="rtName" class="inp" placeholder="如：温汤所周巡"></div>
+        <div class="field"><label>途经建筑物（按顺序，Ctrl/⌘ 多选）</label><select id="rtPts" class="inp" multiple size="6">${bOpts}</select></div>
+        <div class="field"><label>假设车速(km/h)</label><input id="rtSpeed" class="inp" inputmode="numeric" value="30"></div>
+        <div class="field"><label>每点停留(分钟)</label><input id="rtStay" class="inp" inputmode="numeric" value="10"></div>
+        <button class="btn primary" id="rtAdd">添加路线</button>
+      </div>`;
+    openModal("我的巡视路线", html, `<button class="btn ghost" id="rtClose">关闭</button>`);
+    el("rtClose").onclick = closeModal;
+    el("rtAdd").onclick = () => {
+      const pts = [...el("rtPts").selectedOptions].map((o) => o.value);
+      if (!pts.length) return toast("请至少选择 1 个途经建筑物");
+      const s = getOps();
+      s.routes.push({ id: "r" + Date.now().toString(36), name: el("rtName").value.trim() || "路线" + (s.routes.length + 1), points: pts, speed: +el("rtSpeed").value || 30, stayMin: +el("rtStay").value || 10 });
+      setOps(s); openOpsRoute();
+    };
+    document.querySelectorAll(".ops-del").forEach((b) => b.onclick = () => {
+      const s = getOps(); s.routes.splice(+b.dataset.i, 1); setOps(s); openOpsRoute();
+    });
+  }
+
+  // 照片轮播：多照片时点击进入自动循环
+  let _lbTimer = null;
+  function startLbCycle(photos, idx) {
+    stopLbCycle();
+    if (photos.length <= 1) return;
+    _lbTimer = setInterval(() => {
+      idx = (idx + 1) % photos.length;
+      openPhotoAt(photos, idx);
+    }, 2500);
+  }
+  function stopLbCycle() { if (_lbTimer) { clearInterval(_lbTimer); _lbTimer = null; } }
+  // 新入口：接收某建筑物的多照片数组，支持自动轮播
+  async function openPhotoCycle(rid) {
+    const r = findRec(rid); if (!r || !r.photos || !r.photos.length) return;
+    const photos = r.photos;
+    window.__CUR_PHOTOS__ = photos;
+    lbRid = rid; lbPi = 0;
+    await openPhotoAt(photos, 0);
+    // 控制条：多照片时显示切换 + 自动轮播按钮
+    const multi = photos.length > 1;
+    el("lbBar").style.display = multi ? "" : "none";
+    el("lbPrev").style.display = multi ? "" : "none";
+    el("lbNext").style.display = multi ? "" : "none";
+    el("lbIdx").style.display = multi ? "" : "none";
+    ensureLbCycleBtn();
+  }
+  async function openPhotoAt(photos, idx) {
+    const ph = photos[idx];
+    el("lbImg").src = await loadPhotoFull(ph);
+    el("lbImg").style.transform = "";
+    el("lbCap").textContent = (ph.caption || "") + (photos.length > 1 ? `（${idx + 1}/${photos.length}）` : "");
+    el("lbIdx").textContent = photos.length > 1 ? `${idx + 1}/${photos.length}` : "";
+    el("lightbox").classList.add("show");
+  }
+  function ensureLbCycleBtn() {
+    if (el("lbCycle")) return;
+    const bar = el("lbBar"); if (!bar) return;
+    const btn = document.createElement("button");
+    btn.id = "lbCycle"; btn.className = "lb-btn"; btn.textContent = "自动";
+    btn.onclick = () => {
+      const photos = window.__CUR_PHOTOS__ || [];
+      if (_lbTimer) { stopLbCycle(); btn.textContent = "自动"; btn.classList.remove("on"); }
+      else if (photos.length > 1) {
+        const cur = (parseInt((el("lbIdx").textContent || "1").split("/")[0]) || 1) - 1;
+        startLbCycle(photos, cur); btn.textContent = "停止"; btn.classList.add("on");
+      }
+    };
+    bar.appendChild(btn);
+  }
+
+
+  // ================= 知识库（KB）集成 · 需求③ =================
+  // 让 AI 融入应用：KB 承载建筑物骨架 + 操作日志 + Hermes 自我学习记忆。
+  // 所有钩子对 KB 缺失/异常均优雅降级，不影响主流程。
+  function kbReady() { return !!(window.KB && KB.all); }
+  function kbLog(desc, params) { if (kbReady()) { try { KB.logOp(desc, params); } catch (e) {} } }
+
+  async function initKB() {
+    if (!kbReady()) return;
+    try {
+      const es = await KB.all();
+      if (es.length) return;                       // 已有骨架/数据，不覆盖
+      // 优先用构建期预生成骨架（离线即时）；失败则运行期重建兜底
+      try {
+        const res = await fetch("kb_skeleton.json");
+        if (res.ok) {
+          const j = await res.json();
+          const arr = (j.entries || []).filter((e) => e && e.id && e.md && e.type);
+          if (arr.length) { for (const e of arr) await KB.put(e); kbLog("预构建知识库骨架导入", { entries: arr.length }); return; }
+        }
+      } catch (e) { console.warn("KB prebuilt skip:", e); }
+      const recs = (records || []).filter((r) => r && r.lat != null && r.lon != null);
+      if (recs.length) {
+        const n = await KB.rebuildSkeleton(recs);
+        kbLog("初始化知识库骨架", { buildings: n });
+      }
+    } catch (e) { console.warn("KB init skip:", e); }
+  }
+
+  // KB 导入进度弹窗（.bar/.bar-fill 复用批量导入照片的进度条样式）
+  function kbProgress(title) {
+    openModal(title,
+      `<div class="hint" id="kbPMsg">准备中…</div><div class="bar"><div class="bar-fill" id="kbPBar" style="width:0%"></div></div>`);
+    return {
+      set(p, msg) {
+        const m = el("kbPMsg"), b = el("kbPBar");
+        if (m && msg != null) m.textContent = msg;
+        if (b) b.style.width = Math.max(0, Math.min(100, Math.round(p))) + "%";
+      },
+      close() { closeModal(); },
+    };
+  }
+
+  // 子菜单①：导入外部文件 → 智能转 md（进度条）→ 入库（v2.4.5：pdf/docx/xlsx/html 等全支持）
+  function kbImportFile() {
+    if (!kbReady()) return toast("知识库未加载");
+    pickFiles({ multiple: true, accept: ".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.json,.jpg,.jpeg,.png,.bmp,.webp,application/pdf,image/*,text/*,*/*", onPick: async (files) => {
+      if (!files.length) return;
+      const p = kbProgress("外部文件智能转换入库");
+      let ok = 0, fail = 0, msg = "";
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        p.set((i / files.length) * 100, `（${i + 1}/${files.length}）正在转换：${f.name}`);
+        try {
+          const entry = await KB.convertExternalAuto(f, (pp, m2) =>
+            p.set(((i + pp / 100) / files.length) * 100, `（${i + 1}/${files.length}）${f.name}：${m2 || ""}`));
+          ok++;
+          kbLog("外部文件智能转换入库", { file: f.name, title: entry.title });
+        } catch (e) { fail++; msg += `【${f.name}】${e.message} `; }
+        await new Promise((r) => setTimeout(r, 0)); // 让出主线程，进度条不卡死
+      }
+      p.close();
+      toast(`已入库 ${ok} 个文件` + (fail ? `，失败 ${fail} 个：${msg}` : ""));
+    }});
+  }
+
+  // 子菜单②：导出知识库（v2.4.5：md / txt / html 主流知识库兼容格式；zip 完整备份保留兼容）
+  async function kbExport() {
+    if (!kbReady()) return toast("知识库未加载");
+    const n = (await KB.all()).length;
+    const opt = (v, label, i) => `<label style="display:flex;gap:8px;align-items:center;padding:6px 0"><input type="radio" name="kbFmt" value="${v}" ${i === 0 ? "checked" : ""}> ${label}</label>`;
+    const html = `<div class="hint">共 <b>${n}</b> 条知识。md 为 YAML front matter 格式，Obsidian / Joplin / 语雀 / Notion 等主流知识库可直接导入：</div>` +
+      opt("md", "Markdown（.md · 推荐，主流知识库兼容）") +
+      opt("txt", "纯文本（.txt）") +
+      opt("html", "网页（.html · 双击可直接打开）") +
+      opt("zip", "完整备份（.zip · 旧格式，含 json 索引）");
+    openModal("导出知识库", html, `<button class="btn ghost" id="kbExClose">关闭</button><button class="btn primary" id="kbExGo">导出</button>`);
+    el("kbExClose").onclick = closeModal;
+    el("kbExGo").onclick = async () => {
+      const fmt = (document.querySelector('input[name="kbFmt"]:checked') || {}).value || "md";
+      closeModal();
+      busy("正在导出知识库…");
+      try {
+        const out = await KB.exportAs(fmt);
+        // v2.4.8：默认文件名「知识库+日期.md/.txt/.html/.zip」，并走统一导出路径（可自定义文件夹/文件名）
+        const d = new Date();
+        const stamp = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        const defName = "知识库" + stamp + "." + fmt;
+        if (typeof out.data === "string") IO.downloadText(defName, out.data, out.mime);
+        else IO.downloadBytes(defName, out.data, out.mime);
+        kbLog("导出知识库", { fmt, size: out.data.length || out.data.byteLength, entries: n });
+        toast("知识库已导出：" + defName);
+      } catch (e) { toast("导出失败：" + e.message); }
+      finally { busy(false); }
+    };
+  }
+
+  // 子菜单③：导入知识库文件（v2.4.5：md / txt / html 可多选，front matter 自动还原；旧 .zip 备份仍兼容）
+  async function kbImportBackup() {
+    if (!kbReady()) return toast("知识库未加载");
+    pickFiles({ multiple: true, accept: ".md,.markdown,.txt,.html,.htm,.zip,text/markdown,text/plain,text/html,application/zip,*/*", onPick: async (files) => {
+      if (!files.length) return;
+      const p = kbProgress("导入知识库文件");
+      let ok = 0, fail = 0, msg = "";
+      try {
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          p.set((i / files.length) * 100, `（${i + 1}/${files.length}）正在导入：${f.name}`);
+          try {
+            if (/\.zip$/i.test(f.name)) {
+              ok += await KB.importZip(await f.arrayBuffer());
+            } else {
+              ok += await KB.importDocuments([f], (pp, m2) =>
+                p.set(((i + pp / 100) / files.length) * 100, `（${i + 1}/${files.length}）${m2 || f.name}`));
+            }
+          } catch (e) { fail++; msg += `【${f.name}】${e.message} `; }
+        }
+        kbLog("导入知识库文件", { files: files.length, ok, fail });
+        p.close();
+        toast(`已导入 ${ok} 条知识` + (fail ? `，失败 ${fail} 个：${msg}` : ""));
+      } catch (e) { p.close(); toast("导入失败：" + e.message); }
+    }});
+  }
+
+  // 供 ai.js 注入 KB 上下文（让模型可读知识库）+ Hermes 学习钩子（v2.4.6：切片级智能检索，段落更精准）
+  window.__kbContext = async (q) => {
+    if (!kbReady()) return "";
+    try {
+      const r = await (KB.fuzzyQuery ? KB.fuzzyQuery(q, 8) : KB.smartQuery(q, 8));   // v2.4.8：优先模糊检索（错字/缺字可召回）
+      window.__kbLocalHit = !!r.length;
+      return r.map((x) => "# " + (x.title || "") + (x.tags && x.tags.length ? "（" + x.tags.join("、") + "）" : "") + "\n" + (x.chunk || "")).join("\n\n---\n\n");
+    } catch (e) { return ""; }
+  };
+  window.__kbMemoryContext = async () => { if (!kbReady() || !KB.memory) return ""; try { const m = await KB.memory(); return m ? "# 自我学习记忆（Hermes）\n" + m.slice(-2000) : ""; } catch (e) { return ""; } };
+  window.__hermesNote = (kind, text) => { if (kbReady() && KB.hermes) { KB.hermes("[" + kind + "] " + String(text || "").slice(0, 200)).catch(() => {}); } };
+
+
+  // ---------- v2.4.8 知识库智能化：模糊检索 / 提示词生成 / AI记忆 / 存疑与反向查询 ----------
+  (function () {
+    if (!window.__EXT_ACTS__) window.__EXT_ACTS__ = {};
+    function kbOk() { return (typeof kbReady === "function" && kbReady() && window.KB); }
+    function escT(s) { return (typeof esc === "function") ? esc(s) : String(s == null ? "" : s); }
+    function pct(s) { return (Math.round((s || 0) * 100)) + "%"; }
+    function rowsHtml(list) {
+      if (!list || !list.length) return '<div class="hint">无匹配结果</div>';
+      return list.map(function (r, i) {
+        return '<div class="hist-item" data-kbi="' + i + '">' +
+          '<div class="hist-top"><b>' + escT(r.title || r.id) + '</b><span class="hist-badge off">' + pct(r.score) + '</span></div>' +
+          (r.tags && r.tags.length ? '<div class="hint">#' + escT(r.tags.join(" #")) + '</div>' : "") +
+          '<div class="hist-q" style="white-space:pre-wrap">' + escT(String(r.chunk || "").slice(0, 240)) + '</div>' +
+          '<div class="hist-acts"><button class="btn ghost sm" data-kbact="rev" data-kbi="' + i + '">反向查询</button>' +
+          '<button class="btn ghost sm" data-kbact="doubt" data-kbi="' + i + '">标为存疑</button></div></div>';
+      }).join("");
+    }
+    function bindKbRows(box, list) {
+      if (!box) return;
+      box.querySelectorAll("[data-kbact]").forEach(function (b) {
+        const r = list[+b.getAttribute("data-kbi")];
+        if (!r) return;
+        b.onclick = function () {
+          const act = b.getAttribute("data-kbact");
+          if (act === "doubt") {
+            if (!window.KB || !KB.markDoubt) return toast("知识库未启用");
+            KB.markDoubt(r.title || r.id, r.chunk || "", { from: "kb_fuzzy" }).then(function () { toast("已标记为存疑"); });
+          } else {
+            if (!window.KB || !KB.reverseQuery) return toast("知识库未启用");
+            KB.reverseQuery(r.chunk || "", 5).then(function (rel) {
+              openModal("反向查询 · " + (r.title || r.id), rowsHtml(rel), '<button class="btn primary" id="rvClose">关闭</button>');
+              el("rvClose").onclick = closeModal;
+            });
+          }
+        };
+      });
+    }
+    // ① 模糊检索（错字/缺字也能命中，带相关度）
+    function openKbFuzzy() {
+      if (!kbOk()) return toast("知识库未加载");
+      openModal("知识库模糊检索",
+        '<div class="hint">支持错字、缺字、语序不同：如"跌水闸"也能命中"跌水节制闸"。结果按相关度排序。</div>' +
+        '<div class="field"><label>检索内容</label><input id="kbfIn" class="inp" placeholder="输入关键词或一句话"></div>' +
+        '<div id="kbfOut" class="ai-out"></div>',
+        '<button class="btn ghost" id="kbfClose">关闭</button><button class="btn primary" id="kbfGo">模糊检索</button>');
+      el("kbfClose").onclick = closeModal;
+      const out = el("kbfOut");
+      const go = function () {
+        const q = (el("kbfIn") ? el("kbfIn").value : "").trim();
+        if (!q) return toast("请输入检索内容");
+        out.innerHTML = '<div class="hint">检索中…</div>';
+        (KB.fuzzyQuery ? KB.fuzzyQuery(q, 12) : KB.smartQuery(q, 12)).then(function (list) {
+          out.innerHTML = rowsHtml(list);
+          bindKbRows(out, list);
+        }).catch(function (e) { out.innerHTML = '<div class="err">检索失败：' + escT(e.message) + '</div>'; });
+      };
+      el("kbfGo").onclick = go;
+      if (el("kbfIn")) el("kbfIn").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+    }
+    // ② 提示词生成（问题 + 知识库片段 + 记忆 → 完整提示词，可复制 / 直投模型）
+    function openKbPrompt() {
+      if (!kbOk() || !KB.promptGen) return toast("知识库未加载");
+      openModal("提示词生成",
+        '<div class="hint">输入问题 → 自动拼接「长期记忆 + 知识库最相关片段 + 输出要求」生成完整提示词，可复制或直投大模型。</div>' +
+        '<div class="field"><label>你的问题</label><textarea id="kbpIn" class="inp" rows="3" placeholder="如：这座闸的建成年代与管理所归属？"></textarea></div>' +
+        '<div id="kbpOut" class="ai-out"></div>',
+        '<button class="btn ghost" id="kbpClose">关闭</button><button class="btn ghost" id="kbpCopy">复制</button><button class="btn ghost" id="kbpSend">投喂模型</button><button class="btn primary" id="kbpGo">生成提示词</button>');
+      el("kbpClose").onclick = closeModal;
+      const out = el("kbpOut");
+      const gen = function () {
+        const q = (el("kbpIn") ? el("kbpIn").value : "").trim();
+        if (!q) return toast("请输入问题");
+        out.innerHTML = '<div class="hint">正在检索知识库并生成…</div>';
+        KB.promptGen(q, { k: 6, maxChars: 4000 }).then(function (p) {
+          window.__lastKbPrompt = p;
+          out.innerHTML = '<textarea id="kbpTxt" class="inp" rows="14" style="width:100%">' + escT(p) + '</textarea>';
+        }).catch(function (e) { out.innerHTML = '<div class="err">生成失败：' + escT(e.message) + '</div>'; });
+      };
+      el("kbpGo").onclick = gen;
+      el("kbpCopy").onclick = function () {
+        const t = document.getElementById("kbpTxt");
+        const s = t ? t.value : (window.__lastKbPrompt || "");
+        if (!s) return toast("请先生成提示词");
+        try { if (navigator.clipboard) navigator.clipboard.writeText(s); } catch (e) {}
+        toast("已复制提示词");
+      };
+      const send = function () {
+        const s = (document.getElementById("kbpTxt") || {}).value || window.__lastKbPrompt || "";
+        if (!s) return toast("请先生成提示词");
+        if (!window.AI || !AI.strategyCall) return toast("AI 未初始化");
+        out.insertAdjacentHTML("beforeend", '<div class="hint">已投喂大模型，等待回答…</div>');
+        AI.strategyCall(s, {}).then(function (t) {
+          out.insertAdjacentHTML("beforeend", '<div class="src-badge">[模型回答]</div><div>' + (AI.mdLite ? AI.mdLite(t) : escT(t)) + '</div>');
+        }).catch(function (e) { out.insertAdjacentHTML("beforeend", '<div class="err">调用失败：' + escT(e.message) + '</div>'); });
+      };
+      const senb = document.getElementById("kbpSend");
+      if (senb) senb.onclick = send;
+    }
+    // ③ AI 记忆（Hermes 自我学习）：查看 / 检索 / 清空
+    function openKbMemory() {
+      if (!kbOk() || !KB.memoryText) return toast("知识库未加载");
+      const show = function (list) {
+        const body = (list && list.length)
+          ? list.map(function (x) { return '<div class="hist-q">' + escT(typeof x === "string" ? x : x.line) + '</div>'; }).join("")
+          : '<div class="hint">暂无记忆</div>';
+        openModal("AI 记忆 · Hermes 自我学习",
+          '<div class="hint">系统会把每次查询/纠错/存疑自动沉淀为记忆，供后续提示词引用（可在提示词中看到「长期记忆」段）。</div>' +
+          '<div class="field"><label>检索记忆</label><input id="kbmQ" class="inp" placeholder="留空显示全部（最多 200 条）"></div>' +
+          '<div id="kbmOut" class="ai-out">' + body + '</div>',
+          '<button class="btn ghost" id="kbmClose">关闭</button><button class="btn ghost" id="kbmGo">检索</button><button class="btn ghost" id="kbmClear">清空记忆</button>');
+        el("kbmClose").onclick = closeModal;
+        el("kbmGo").onclick = function () {
+          const q = (el("kbmQ") ? el("kbmQ").value : "").trim();
+          const run = q ? KB.memorySearch(q, 50) : KB.memoryText().then(function (m) {
+            return m.split(/\r?\n/).filter(function (s) { return s.trim(); }).slice(-200).map(function (s) { return { line: s }; });
+          });
+          run.then(function (l) { el("kbmOut").innerHTML = (l && l.length) ? l.map(function (x) { return '<div class="hist-q">' + escT(typeof x === "string" ? x : x.line) + '</div>'; }).join("") : '<div class="hint">无匹配记忆</div>'; });
+        };
+        el("kbmClear").onclick = function () {
+          if (!window.confirm("确认清空全部 AI 记忆？（知识条目不受影响）")) return;
+          KB.memoryClear().then(function () { closeModal(); toast("已清空 AI 记忆"); });
+        };
+      };
+      KB.memoryText().then(function (m) {
+        const lines = m.split(/\r?\n/).filter(function (s) { return s.trim(); }).slice(-200).map(function (s) { return { line: s }; });
+        show(lines);
+      });
+    }
+    // ④ 存疑与反向查询：列出存疑条目，新增存疑后自动反向查证
+    function openKbDoubt() {
+      if (!kbOk() || !KB.listDoubts) return toast("知识库未加载");
+      const render = function () {
+        KB.listDoubts().then(function (list) {
+          const rows = list.length ? list.map(function (d, i) {
+            return '<div class="hist-item"><div class="hist-top"><b>' + escT(d.title || d.id) + '</b><span class="hist-badge off">待核实</span></div>' +
+              '<div class="hist-q" style="white-space:pre-wrap">' + escT(String(d.md || "").slice(0, 200)) + '</div>' +
+              '<div class="hist-acts"><button class="btn ghost sm" data-doubt="rev" data-i="' + i + '">反向查询</button>' +
+              '<button class="btn ghost sm" data-doubt="del" data-i="' + i + '">删除</button></div></div>';
+          }).join("") : '<div class="hint">暂无存疑条目</div>';
+          openModal("存疑与反向查询",
+            '<div class="hint">对不确定的内容打上存疑标记，系统会用其内容反向检索知识库，找出最相关的条目辅助核实。</div>' +
+            '<div class="field"><label>新增存疑 · 标题</label><input id="kbdT" class="inp" placeholder="如：某闸建成年代存疑"></div>' +
+            '<div class="field"><label>存疑内容</label><textarea id="kbdM" class="inp" rows="3" placeholder="粘贴不确定的原文或 AI 回答…"></textarea></div>' +
+            '<div class="hist-list">' + rows + '</div><div id="kbdOut" class="ai-out"></div>',
+            '<button class="btn ghost" id="kbdClose">关闭</button><button class="btn primary" id="kbdAdd">保存存疑并反向查询</button>');
+          el("kbdClose").onclick = closeModal;
+          document.querySelectorAll("[data-doubt]").forEach(function (b) {
+            const d = list[+b.getAttribute("data-i")];
+            if (!d) return;
+            b.onclick = function () {
+              if (b.getAttribute("data-doubt") === "del") {
+                if (!window.confirm("删除该存疑条目？")) return;
+                KB.del(d.id).then(render);
+                return;
+              }
+              KB.reverseQuery(d.md || "", 5).then(function (rel) {
+                openModal("反向查询 · " + (d.title || d.id), rowsHtml(rel), '<button class="btn primary" id="rv2Close">关闭</button>');
+                el("rv2Close").onclick = closeModal;
+              });
+            };
+          });
+          el("kbdAdd").onclick = function () {
+            const t = (el("kbdT") ? el("kbdT").value : "").trim();
+            const m = (el("kbdM") ? el("kbdM").value : "").trim();
+            if (!t && !m) return toast("请填写标题或存疑内容");
+            KB.markDoubt(t || "未命名存疑", m, { from: "kb_doubt" }).then(function (e) {
+              return KB.reverseQuery(m || t, 5).then(function (rel) {
+                openModal("已保存 · 反向查询结果", '<div class="hint">「' + escT(e.title) + '」已存入知识库，以下为最相关条目：</div>' + rowsHtml(rel),
+                  '<button class="btn primary" id="kbdOk">关闭</button>');
+                el("kbdOk").onclick = function () { closeModal(); render(); };
+              });
+            }).catch(function (er) { toast("保存失败：" + er.message); });
+          };
+        });
+      };
+      render();
+    }
+    window.__EXT_ACTS__.kbFuzzy = openKbFuzzy;
+    window.__EXT_ACTS__.kbPrompt = openKbPrompt;
+    window.__EXT_ACTS__.kbMemory = openKbMemory;
+    window.__EXT_ACTS__.kbDoubt = openKbDoubt;
+  })();
+
+  // ---------- 启动 ----------
+  window.APP = { showAllParams, edit: openEdit, shareBuilding,   /* v2.4.3 修复：气泡「分享」按钮 onclick=\"APP.shareBuilding()\" 长期未导出 → 点击即 script error */ del, openPhoto, viewPhotos: openPhotoCycle, navigate, nearCenter, close: closeModal, back,
+    receivePhoto, receiveSheet, receiveDone, receiveError, receiveCancel, onExportResult,
+    spatialFor, spatialStat: openSpatialStat, addBld: () => openAdd(LAYER_BLD, "building"), addPlace: () => openAdd(LAYER_BLD, "place"), importBld: importBuildings };
+  // v2.4.3：暴露 ai.js 依赖的全局 helper（三端一致），否则 AI 菜单 openModal is not defined → script error
+  window.el = el;
+  window.__getRecords = function () { return records.concat(recordsBld); };  // v2.4.3：journal.js/objsearch.js 取当前库内对象；v2.5.0 起含水工建筑物层
+  window.__getLayers = function () { return { dev: records, bld: recordsBld }; };  // v2.5.0：分层取数（供分层导出/统计等外部调用）
+  window.__APP_VER__ = APP_VER;   // v2.4.3：upgrade.js 版本兼容检查的唯一版本来源
+  window.openModal = openModal;
+  window.closeModal = closeModal;
+  window.toast = toast;
+  window.esc = esc;
+  window.busy = busy;
+  // v2.4.2 启动完整性检查（智能同步优化）：感知端关键函数/引擎检测
+  (function initIntegrityCheck() {
+    const required = [
+      ["openOrgManager", typeof openOrgManager === "function", "机构层级管理"],
+      ["openClassifyManager", typeof openClassifyManager === "function", "分类维度管理"],
+      ["openQuickFavSettings", typeof openQuickFavSettings === "function", "快捷常用设置"],
+      ["openFilter", typeof openFilter === "function", "筛选菜单"],
+      ["openNearby", typeof openNearby === "function", "周边搜索"],
+      ["matchOrgScope", typeof matchOrgScope === "function", "ZIP 三级匹配"],
+      ["doExportPhotos", typeof doExportPhotos === "function", "导出照片"],
+      ["KF", !!window.KB && typeof window.KB.retrieve === "function", "知识库引擎"],
+      ["AI", !!window.AI && typeof window.AI.openQuery === "function", "AI 引擎"]
+    ];
+    const missing = required.filter((x) => !x[1]).map((x) => x[0]);
+    window.__integrity = { missing, ok: !missing.length, ts: Date.now() };
+    if (missing.length) console.warn("[integrity] missing:", missing.map((n) => required.find((r) => r[0] === n)[2]).join("\u3001"));
+  })();
+  initMap();
+  bindUI();
+  loadUI();
+  load().then(() => {
+    addBasemap();
+    updateLayerBtn();
+    render();
+    initKB();
+    if (lastCenter) map.setView([lastCenter.lat, lastCenter.lng], lastCenter.zoom);
+    else fitToShown();
+  }).catch((e) => toast("加载失败：" + e.message));
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http"))
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  // ---------- v2.4.3 天地图密钥管理（#9：隐藏当前密钥 + 复制需访问密码）----------
+  function openTiandituKeySettings() {
+    const cur = (() => { try { return JSON.parse(localStorage.getItem("appsettings_key_v1") || "{}"); } catch (e) { return {}; } })();
+    const html = `<div class="hint">天地图密钥可能过期。本页可重置浏览器端与服务端 token；保存后<b>立即生效</b>（无需刷新页面）。默认 token 用于开箱即用，重设后写到 localStorage appsettings_key_v1，原 __CONFIG__ 配置不再被读取。</div>
+      <div class="field"><label>浏览器端 TIANDITU_TOKEN（前端在线底图加载）</label><input id="tdtClient" class="inp" value="" placeholder="留空则保持当前密钥 · 32位 16 进制字符串"></div>
+      <div class="field"><label>服务端 TIANDITU_SERVER_TOKEN（瓦片下载脚本）</label><input id="tdtServer" class="inp" value="" placeholder="留空则保持当前密钥 · 32位 16 进制字符串"></div>
+      <div class="field"><label>当前生效的 token（已隐藏，防窃取）</label><input class="inp" readonly value="客户端：••••••••••••••••    服务端：••••••••••••••••"></div>
+      <div class="field"><label>复制当前密钥（需验证访问密码）</label><input id="tdtPwd" type="password" class="inp" placeholder="输入访问密码" autocomplete="off"></div>
+      <div class="hint">密钥不再明文展示；点「复制当前密钥」并在上方输入正确密码后才可复制。恢复默认：点「恢复默认」回到内置 token；点「清空保存」清空 localStorage（恢复用 __CONFIG__ 注入）。</div>`;
+    openModal("天地图密钥管理", html, `<button class="btn ghost" id="tdtReset">恢复默认</button><button class="btn ghost" id="tdtClear">清空保存</button><button class="btn ghost" id="tdtCopy">复制当前密钥</button><button class="btn ghost" id="tdtCancel">取消</button><button class="btn primary" id="tdtSave">💾 保存并立即生效</button>`);
+    el("tdtCancel").onclick = closeModal;
+    el("tdtReset").onclick = () => {
+      el("tdtClient").value = TIANDITU_DEFAULT; el("tdtServer").value = TIANDITU_SERVER_DEFAULT;
+      toast("已恢复为内置默认 token");
+    };
+    el("tdtClear").onclick = () => {
+      try { localStorage.removeItem("appsettings_key_v1"); } catch (e) {}
+      TIANDITU = (window.__CONFIG__ && window.__CONFIG__.TIANDITU_TOKEN) || TIANDITU_DEFAULT;
+      TIANDITU_SERVER = (window.__CONFIG__ && window.__CONFIG__.TIANDITU_SERVER_TOKEN) || TIANDITU_SERVER_DEFAULT;
+      try { refreshBasemap(); } catch (e) {}
+      toast("已清空 localStorage，使用 __CONFIG__ 或内置 token；底图刷新中…");
+      closeModal();
+    };
+    el("tdtSave").onclick = () => {
+      const c = (el("tdtClient").value || "").trim();
+      const s = (el("tdtServer").value || "").trim();
+      if (c && !/^[0-9a-fA-F]{16,}$/.test(c)) return toast("客户端 token 格式不对（应为 16 进制字符串）");
+      if (s && !/^[0-9a-fA-F]{16,}$/.test(s)) return toast("服务端 token 格式不对（应为 16 进制字符串）");
+      const cfg = { TIANDITU_TOKEN: c || TIANDITU_DEFAULT, TIANDITU_SERVER_TOKEN: s || TIANDITU_SERVER_DEFAULT };
+      try { localStorage.setItem("appsettings_key_v1", JSON.stringify(cfg)); } catch (e) {}
+      TIANDITU = cfg.TIANDITU_TOKEN; TIANDITU_SERVER = cfg.TIANDITU_SERVER_TOKEN;
+      try { refreshBasemap(); } catch (e) {}
+      toast("已保存并生效。底图无需刷新。" + (basemapOn ? "" : "（开启底图后生效）"));
+      closeModal();
+    };
+    el("tdtCopy").onclick = () => {
+      const pwd = (el("tdtPwd") || {}).value || "";
+      if (pwd !== "3305") { toast("访问密码错误，无法复制密钥"); return; }
+      const txt = "TIANDITU_TOKEN=" + (TIANDITU || "") + "\nTIANDITU_SERVER_TOKEN=" + (TIANDITU_SERVER || "");
+      try { if (navigator.clipboard) navigator.clipboard.writeText(txt); } catch (e) {}
+      toast("已复制当前密钥到剪贴板");
+    };
+  }
+  // ---------- v2.4.9：启动口令保护（出厂口令由交付说明提供，可修改 / 可保存）----------
+  var PWD_DEFAULT = "3305";
+  var DEV_EXT_NO = "3305";
+  var PWD_KEY = (window.__APP_ID__ || "app") + "_pwd_v1";
+  var PWD_SAVE_KEY = (window.__APP_ID__ || "app") + "_pwdsave_v1";
+  function pwdHash(s) {
+    var str = "yzt#" + String(s == null ? "" : s);
+    var h = 5381, h2 = 52711, i;
+    for (i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) & 0x7fffffff;
+    for (i = str.length - 1; i >= 0; i--) h2 = ((h2 << 5) + h2 + str.charCodeAt(i)) & 0x7fffffff;
+    return "h" + h.toString(16) + "-" + h2.toString(16);
+  }
+  function pwdStored() { try { return localStorage.getItem(PWD_KEY) || ""; } catch (e) { return ""; } }
+  function pwdCheck(p) {
+    var st = pwdStored();
+    if (!st) return String(p) === PWD_DEFAULT;
+    return pwdHash(p) === st;
+  }
+  function pwdSet(p) { try { localStorage.setItem(PWD_KEY, pwdHash(p)); } catch (e) {} }
+  function pwdSaveOn() { try { return localStorage.getItem(PWD_SAVE_KEY) === "1"; } catch (e) { return false; } }
+  function pwdSetSave(on) { try { localStorage.setItem(PWD_SAVE_KEY, on ? "1" : "0"); } catch (e) {} }
+  function pwdLockStyle() {
+    if (document.getElementById("pwdLockStyle")) return;
+    var st = document.createElement("style");
+    st.id = "pwdLockStyle";
+    st.textContent = ".pwdlock{position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#0d2137,#123a5e 60%,#0d2137);color:#e8eef6}"
+      + ".pwdlock .box{width:min(92vw,380px);background:rgba(9,26,44,.92);border:1px solid rgba(61,169,252,.35);border-radius:16px;padding:22px 20px;box-shadow:0 18px 48px rgba(0,0,0,.45)}"
+      + ".pwdlock h3{margin:0 0 6px;font-size:18px}.pwdlock .hint{font-size:12px;color:#9fb6cd;line-height:1.7}"
+      + ".pwdlock .inp{width:100%;margin-top:10px}.pwdlock .row{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:#cfe0f2}"
+      + ".pwdlock .err{color:#ff9a9a;font-size:12px;min-height:16px;margin-top:6px}.pwdlock .acts{display:flex;gap:8px;margin-top:14px}.pwdlock .acts .btn{flex:1}";
+    (document.head || document.documentElement).appendChild(st);
+  }
+  // 启动口令锁屏
+  function showPwdLock() {
+    pwdLockStyle();
+    var old = document.getElementById("pwdLock");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var d = document.createElement("div");
+    d.id = "pwdLock";
+    d.className = "pwdlock";
+    d.innerHTML = '<div class="box">'
+      + '<h3>请输入启动口令</h3>'
+      + '<div class="hint">请输入启动口令（初始口令由管理员提供）。进入后可在「设置 → 修改密码」中更改。</div>'
+      + '<input id="pwdInput" class="inp" type="password" inputmode="numeric" autocomplete="off" placeholder="启动口令">'
+      + '<label class="row"><input id="pwdRemember" type="checkbox"/> 保存密码，下次不用输入</label>'
+      + '<div class="err" id="pwdErr"></div>'
+      + '<div class="acts"><button class="btn ghost" id="pwdForgot">忘记密码</button>'
+      + '<button class="btn primary" id="pwdOk">进入</button></div>'
+      + '<div class="hint" id="pwdForgotTip" style="margin-top:10px;display:none">忘记密码请联系软件开发者 / 管理员协助重置。</div>'
+      + '</div>';
+    document.body.appendChild(d);
+    function go() {
+      var v = (document.getElementById("pwdInput") || {}).value || "";
+      if (!pwdCheck(v)) {
+        var e = document.getElementById("pwdErr");
+        if (e) e.textContent = "口令不正确，请重新输入";
+        try { if (navigator.vibrate) navigator.vibrate(60); } catch (_) {}
+        return;
+      }
+      pwdSetSave(!!((document.getElementById("pwdRemember") || {}).checked));
+      if (d.parentNode) d.parentNode.removeChild(d);
+    }
+    var ok = document.getElementById("pwdOk"); if (ok) ok.onclick = go;
+    var ip = document.getElementById("pwdInput");
+    if (ip) { ip.onkeydown = function (ev) { if (ev && ev.key === "Enter") go(); }; setTimeout(function () { try { ip.focus(); } catch (e) {} }, 60); }
+    var fg = document.getElementById("pwdForgot");
+    if (fg) fg.onclick = function () {
+      var t = document.getElementById("pwdForgotTip");
+      if (t) t.style.display = t.style.display === "none" ? "" : "none";
+    };
+  }
+  function bootPwdLock() {
+    try {
+      if (typeof HM_PROTECT !== "undefined" && HM_PROTECT.indexOf) {
+        if (HM_PROTECT.indexOf("changePwd") < 0) HM_PROTECT.push("changePwd");
+        if (HM_PROTECT.indexOf("forgotPwd") < 0) HM_PROTECT.push("forgotPwd");
+      }
+    } catch (e) {}
+    try {
+      if (pwdSaveOn()) return;
+      showPwdLock();
+    } catch (e) {}
+  }
+  // 设置子菜单：修改密码
+  function openChangePwd() {
+    openModal("修改密码",
+      '<div class="hint">修改后下次启动使用新口令（若已勾选保存密码，本机仍可直接进入）。</div>'
+      + '<div class="field"><label>当前口令</label><input id="pwOld" class="inp" type="password" autocomplete="off"></div>'
+      + '<div class="field"><label>新口令</label><input id="pwNew" class="inp" type="password" autocomplete="off" placeholder="4 位以上"></div>'
+      + '<div class="field"><label>确认新口令</label><input id="pwNew2" class="inp" type="password" autocomplete="off"></div>',
+      '<button class="btn ghost" id="pwCancel">取消</button><button class="btn primary" id="pwSave">保存</button>');
+    var c = el("pwCancel"); if (c) c.onclick = closeModal;
+    var s = el("pwSave");
+    if (s) s.onclick = function () {
+      var o = (el("pwOld") || {}).value || "", n = (el("pwNew") || {}).value || "", n2 = (el("pwNew2") || {}).value || "";
+      if (!pwdCheck(o)) { toast("当前口令不正确"); return; }
+      if (String(n).length < 4) { toast("新口令至少 4 位"); return; }
+      if (n !== n2) { toast("两次输入的新口令不一致"); return; }
+      pwdSet(n);
+      closeModal();
+      toast("口令已修改，请牢记；忘记口令请联系管理员协助重置");
+    };
+  }
+  // 设置子菜单：忘记密码
+  function openForgotPwd() {
+    openModal("忘记密码",
+      '<div class="hint">忘记口令请联系软件开发者 / 管理员协助重置。<br/>'
+      + '由开发者确认身份后，在本页输入<b>重置验证码</b>即可把口令恢复为初始口令。<br/>'
+      + '<span style="color:#ffb4b4">重置只影响启动口令，不会删除任何业务数据。</span></div>'
+      + '<div class="field"><label>重置验证码</label><input id="fgExt" class="inp" type="password" autocomplete="off" placeholder="请输入开发者提供的重置验证码"></div>',
+      '<button class="btn ghost" id="fgCancel">关闭</button><button class="btn primary" id="fgReset">验证并重置</button>');
+    var c = el("fgCancel"); if (c) c.onclick = closeModal;
+    var r = el("fgReset");
+    if (r) r.onclick = function () {
+      var v = ((el("fgExt") || {}).value || "").trim();
+      if (v !== String(DEV_EXT_NO)) { toast("重置验证码不正确，请联系开发者 / 管理员获取"); return; }
+      try { localStorage.removeItem(PWD_KEY); } catch (e) {}
+      pwdSet(PWD_DEFAULT);
+      closeModal();
+      toast("口令已恢复为初始口令，请登录后立即修改");
+    };
+  }
+  try { if (!window.__EXT_ACTS__) window.__EXT_ACTS__ = {}; } catch (e) {}
+  try { window.__EXT_ACTS__.changePwd = openChangePwd; window.__EXT_ACTS__.forgotPwd = openForgotPwd; } catch (e) {}
+  try {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootPwdLock);
+    else bootPwdLock();
+  } catch (e) {}
+  // ---------- /v2.4.9 启动口令保护 ----------
+
+})();
