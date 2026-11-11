@@ -199,14 +199,13 @@
   window.__APP_ID__ = "shipin";
   window.__APP_NAME__ = "感知设备一张图";
   window.__BUILD_CHANNEL__ = "public";   // public=对外公开发行 | internal=内部版；打包脚本按需改写
-  window.__CONFIG__ = {
-    TIANDITU_TOKEN: "61691764ff68bf341c4c9c4770b24b5f",        // 浏览器端 token：前端在线底图加载（矢量/影像）
-    TIANDITU_SERVER_TOKEN: "d258e3622cb1755b59a59e4b7ac6d96e"  // 服务器端 token：瓦片下载脚本 download_tiles.py
-  };
 </script>
 <script src="js/kb.js"></script>
 <script src="js/ocr.js"></script>
 <script src="js/ai.js"></script>
+<!-- 加载密钥：先 config.local.js（本地真实值，若存在则覆盖），再 config.js（占位模板，已入库） -->
+<script src="secrets/config.local.js"></script>
+<script src="secrets/config.js"></script>
 <script src="js/app.js"></script>
 <!-- v2.4.3 升级数据导出/导入 + 跨版本兼容检查 + 网盘新版检测（必须在 app.js 之后：依赖其暴露的全局 helper） -->
 <script src="js/upgrade.js"></script>
